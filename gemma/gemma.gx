@@ -1,0 +1,224 @@
+package gemma
+
+import (
+	"math"
+	"num"
+	"shapes"
+)
+
+// Model hyperparameters:
+var (
+	// Input parameters.
+	VocabSize intlen
+
+	// Architecture parameters.
+	ModelDim       intlen
+	FFHiddenDim    intlen
+	QKVDim         intlen
+	NumHeads       intlen
+	NumGemmaLayers intlen
+
+	// Sampling parameters.
+	NumSamplingSteps intlen
+	PromptLength     intlen
+)
+
+type (
+	// Layer stores the weights of a layer in Gemma.
+	Layer struct {
+		// Transformer-Attention layers
+		PreAttNorm [ModelDim]float32                    `gguf:"attn_norm"`
+		Attention  [ModelDim][NumHeads * QKVDim]float32 `gguf:"attn_output"`
+		Queries    [NumHeads * QKVDim][ModelDim]float32 `gguf:"attn_q"`
+		Keys       [QKVDim][ModelDim]float32            `gguf:"attn_k"`
+		Values     [QKVDim][ModelDim]float32            `gguf:"attn_v"`
+		// Feed-forward layers
+		PreNorm    [ModelDim]float32              `gguf:"ffn_norm"`
+		UpGate     [FFHiddenDim][ModelDim]float32 `gguf:"ffn_gate"`
+		UpLinear   [FFHiddenDim][ModelDim]float32 `gguf:"ffn_up"`
+		DownLinear [ModelDim][FFHiddenDim]float32 `gguf:"ffn_down"`
+	}
+
+	// Gemma stores the weights of the full Gemma network.
+	Gemma struct {
+		TokenEmbedding [VocabSize][ModelDim]float32 `gguf:"token_embd"`
+		Layers         []Layer                      `gguf:"blk"`
+		FinalNormScale [ModelDim]float32            `gguf:"output_norm"`
+	}
+)
+
+// gelu returns the approximation of GeLU used in Gemma training:
+// see https://jax.readthedocs.io/en/latest/_autosummary/jax.nn.gelu.html
+func gelu(x [FFHiddenDim]float32) [FFHiddenDim]float32 {
+	arg := 0.797884560804236 * (x + (0.044715 * x * x * x))
+	return (x / 2) * (1 + math.Tanh(arg))
+}
+
+func logitsSoftCap(x [NumHeads][NumSamplingSteps][1]float32, cap float32) [NumHeads][NumSamplingSteps][1]float32 {
+	return cap * math.Tanh(x/cap)
+}
+
+func l2Squared(x [ModelDim]float32) float32 {
+	result := einsum(x{i} * x{i})
+	return result
+}
+
+func rmsNorm(x, weight [ModelDim]float32) [ModelDim]float32 {
+	scale := 1.0 / math.Sqrt((l2Squared(x)/float32(ModelDim))+1e-6)
+	// NOTE: Internal implementations use `(1.0 + weight)`, but the GGUF convention
+	// is to bake that into the norm scales.
+	return weight * (scale * x)
+}
+
+func mask(pos int64) [NumSamplingSteps]float32 {
+	boolMask := num.IotaFull([]intlen{NumSamplingSteps}) > pos
+	return ([NumSamplingSteps]float32)(boolMask) * math.NegInfFloat32
+}
+
+func softmax(x [NumHeads][NumSamplingSteps][1]float32) [NumHeads][NumSamplingSteps][1]float32 {
+	// Return softmax over sequence dimension.
+	max := [NumHeads][1][1]float32(num.ReduceMax(x, []intidx{1}))
+	exps := math.Exp(x - shapes.Expand(max, []intlen{NumHeads, NumSamplingSteps, 1}))
+	sums := [NumHeads][1][1]float32(num.Sum(exps, []intidx{1}))
+	return exps / shapes.Expand(sums, []intlen{NumHeads, NumSamplingSteps, 1})
+}
+
+func softmaxVocab(x [VocabSize]float32) [VocabSize]float32 {
+	max := float32(num.ReduceMax(x, []intidx{0}))
+	exps := math.Exp(x - max)
+	sum := float32(num.Sum(exps, []intidx{0}))
+	return exps / sum
+}
+
+func rope(x [QKVDim]float32, pos float32) [QKVDim]float32 {
+	maxWavelength := shapes.Expand([1]float32{10000}, []intlen{QKVDim / 2})
+	maxIota := 2 / float32(QKVDim)
+	freqExp := [...]float32(num.IotaFull([]intlen{QKVDim / 2})) * maxIota
+	timescale := math.Pow(maxWavelength, freqExp)
+	radians := pos / timescale
+	sin, cos := math.Sin(radians), math.Cos(radians)
+	xx := shapes.Split(0, x, 2)
+	return [QKVDim]float32(shapes.Concat(0, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin))
+}
+
+func qRoPE(x [NumHeads][QKVDim]float32, pos float32) [NumHeads][QKVDim]float32 {
+	maxWavelength := shapes.Expand([1][1]float32{{10000}}, []intlen{1, QKVDim / 2})
+	maxIota := 2 / float32(QKVDim)
+	freqExp := [...]float32(num.IotaFull([]intlen{1, QKVDim / 2})) * maxIota
+	timescale := math.Pow(maxWavelength, freqExp)
+	radians := pos / timescale
+	shape := []intlen{NumHeads, QKVDim / 2}
+	sin, cos := shapes.Expand(math.Sin(radians), shape), shapes.Expand(math.Cos(radians), shape)
+	xx := shapes.Split(1, x, 2)
+	return [NumHeads][QKVDim]float32(shapes.Concat(1, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin))
+}
+
+func (layer Layer) feedForward(x [ModelDim]float32) [ModelDim]float32 {
+	gate := num.MatMul(layer.UpGate, x)
+	hidden := num.MatMul(layer.UpLinear, x)
+	return num.MatMul(layer.DownLinear, gelu(gate)*hidden)
+}
+
+// MQA: single KV head.
+func (layer Layer) multiQueryAttention(cache KVCache, layerIdx, token int64, x [ModelDim]float32) (KVCache, [ModelDim]float32) {
+	queries := [NumHeads][QKVDim][ModelDim]float32(layer.Queries)
+	qScale := 1.0 / math.Sqrt(float32(QKVDim))
+	qs{head, qkvDim} := einsum(queries{head, qkvDim, modelDim} * x{modelDim})
+	qs = qs * qScale
+	k := num.MatMul(layer.Keys, x)
+	v := num.MatMul(layer.Values, x)
+
+	// Apply positional embeddings to Q and K.
+	qs = qRoPE(qs, float32(token))
+	k = rope(k, float32(token))
+
+	// Fill the KV cache:
+	cache.ks = set(cache.ks, k, [3]int64{layerIdx, token, 0})
+	cache.vs = set(cache.vs, v, [3]int64{layerIdx, token, 0})
+
+	// Build causal attention mask and return attention-weighted sum over previous Vs.
+	bias := shapes.Expand([1][NumSamplingSteps][1]float32(mask(token)), []intlen{NumHeads, NumSamplingSteps, 1})
+	attention{qNumHeads, seq, heads} := einsum(qs{qNumHeads, qkvDim} * cache.ks[layerIdx]{seq, heads, qkvDim})
+	attention = logitsSoftCap(attention, 30)
+	attention = softmax(attention + bias)
+	sum{qNumHeads, qkvDim} := einsum(attention{qNumHeads, seq, heads} * cache.vs[layerIdx]{seq, heads, qkvDim})
+
+	// Final attention output projection. Reshape the output matrix to match GGUF convention.
+	finalAttention := [ModelDim][NumHeads][QKVDim]float32(layer.Attention)
+	result{modelDim} := einsum(sum{head, qkvDim} * finalAttention{modelDim, head, qkvDim})
+	return cache, result
+}
+
+type (
+	KVCache struct {
+		// Specialized for MQA, so [NumHeads] is just [1].
+		ks [NumGemmaLayers][NumSamplingSteps][1][QKVDim]float32
+		vs [NumGemmaLayers][NumSamplingSteps][1][QKVDim]float32
+	}
+
+	// SamplingState is the state maintained between two sampling steps.
+	SamplingState struct {
+		step  int64
+		x     [ModelDim]float32
+		token int64
+		cache KVCache
+	}
+)
+
+func (gemma Gemma) transformer(cache KVCache, token, pos int64) (KVCache, [ModelDim]float32) {
+	x := shapes.Gather(gemma.TokenEmbedding, [1][1]int64{{token}})[0]
+	x = x * math.Sqrt(float32(ModelDim))
+
+	for layerI := range NumGemmaLayers {
+		layer := gemma.Layers[layerI]
+		att_x := rmsNorm(x, layer.PreAttNorm)
+		cache, att_x = layer.multiQueryAttention(cache, int64(layerI), pos, att_x)
+		x = x + att_x
+
+		ffw_x := rmsNorm(x, layer.PreNorm)
+		x = layer.feedForward(ffw_x) + x
+	}
+	x = rmsNorm(x, gemma.FinalNormScale)
+	return cache, x
+}
+
+func (gemma Gemma) extractToken(state SamplingState) int64 {
+	// Extract token probabilities.
+	// TODO: move the distribution to the transformer.
+	logits := num.MatMul(gemma.TokenEmbedding, state.x)
+	logprobs := softmaxVocab(logits)
+	return int64(num.Argmax(logprobs, 0))
+}
+
+// NewSamplingState returns a new sampling state from the initial prompt.
+func (gemma Gemma) NewSamplingState(prompt [NumSamplingSteps + 1]int32) (SamplingState, [_]float32, int64) {
+	state := SamplingState{
+		step:  0,
+		x:     [ModelDim]float32{},
+		token: 0,
+		cache: KVCache{
+			ks: [NumGemmaLayers][NumSamplingSteps][1][QKVDim]float32{},
+			vs: [NumGemmaLayers][NumSamplingSteps][1][QKVDim]float32{},
+		},
+	}
+
+	// Run prefill, ignoring transformer output except for the final input token.
+	for i := range PromptLength {
+		state.cache, state.x = gemma.transformer(state.cache, int64(prompt[i]), int64(i))
+	}
+	state.step = int64(PromptLength)
+
+	// Produce the first output token.
+	state.token = gemma.extractToken(state)
+	return state, state.x, state.token
+}
+
+// SampleStep runs a sample step and returns the new state.
+func (gemma Gemma) SampleStep(state SamplingState) (SamplingState, [_]float32, int64) {
+	state.cache, state.x = gemma.transformer(state.cache, state.token, state.step)
+	state.step = state.step + 1
+
+	// Extract token output.
+	state.token = gemma.extractToken(state)
+	return state, state.x, state.token
+}
