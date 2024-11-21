@@ -14,10 +14,10 @@ github.com/gx-org/backend v0.0.0-20241112095837-44d536b7dd14 h1:X1eaoMuo8gHzM0hQ
 github.com/gx-org/backend v0.0.0-20241112095837-44d536b7dd14/go.mod h1:jKahO9DlgjDBaGV77y/ygQJnfhM6f2zJmFfiV5x52I4=
 github.com/gx-org/gguf v0.0.0-20241029122123-07e3ba87f0d7 h1:A/9mhbzZf8xOi6JF3xXvcD6PDSdvGdlSEc/Wly09CNE=
 github.com/gx-org/gguf v0.0.0-20241029122123-07e3ba87f0d7/go.mod h1:kdEfH1HOBOc/evVUUfAhfLnwQvkXcANvxaTS31kuwwA=
-github.com/gx-org/gx v0.0.0-20241121153353-371f9364222e h1:dSIOEVvsOJAPuPoLIvUYuFsgM7uoYp8mJNs2t6JyY/M=
-github.com/gx-org/gx v0.0.0-20241121153353-371f9364222e/go.mod h1:uhNfZs6KqS3U2zC+qXeTdkEfzSaiM+1sc43OuZD/lDY=
-github.com/gx-org/xlapjrt v0.0.0-20241115152441-5d56d916a73e h1:os+n1bpc7TVuZnui5jew3WNsGwW23ndKz1mGVR7GWvE=
-github.com/gx-org/xlapjrt v0.0.0-20241115152441-5d56d916a73e/go.mod h1:CTgu1rpDWXgCidCI9lQoREzFlRtHR+lJIaONDAI0iWg=
+github.com/gx-org/gx v0.0.0-20241121181657-f47b6fa7a678 h1:/M1ehgscwysv73eHA55E5AZRaS9FwTgJe2ISeYPUOO8=
+github.com/gx-org/gx v0.0.0-20241121181657-f47b6fa7a678/go.mod h1:uhNfZs6KqS3U2zC+qXeTdkEfzSaiM+1sc43OuZD/lDY=
+github.com/gx-org/xlapjrt v0.0.0-20241121182027-8c89e7b65fc6 h1:w9eDOOrfEjNyPdrWXfKIRYxcn28yNhr5VVZ/5gFbogk=
+github.com/gx-org/xlapjrt v0.0.0-20241121182027-8c89e7b65fc6/go.mod h1:CTgu1rpDWXgCidCI9lQoREzFlRtHR+lJIaONDAI0iWg=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=

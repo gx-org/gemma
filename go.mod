@@ -7,8 +7,8 @@ require (
 	github.com/eliben/go-sentencepiece v0.6.0
 	github.com/gx-org/backend v0.0.0-20241112095837-44d536b7dd14
 	github.com/gx-org/gguf v0.0.0-20241029122123-07e3ba87f0d7
-	github.com/gx-org/gx v0.0.0-20241121153353-371f9364222e
-	github.com/gx-org/xlapjrt v0.0.0-20241115152441-5d56d916a73e
+	github.com/gx-org/gx v0.0.0-20241121181657-f47b6fa7a678
+	github.com/gx-org/xlapjrt v0.0.0-20241121182027-8c89e7b65fc6
 	github.com/pkg/errors v0.9.1
 )
 
