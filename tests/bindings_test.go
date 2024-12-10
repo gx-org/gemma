@@ -32,7 +32,7 @@ func TestGemmaBindings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot generate bindings:\n%+v", err)
 	}
-	if err := binder.Bind(out, pkg); err != nil {
+	if err := binder.GoBindings(out, pkg.IR()); err != nil {
 		t.Fatalf("cannot generate bindings:\n%+v", err)
 	}
 	got := out.String()

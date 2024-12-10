@@ -27,7 +27,6 @@ import (
 
 	"github.com/pkg/errors"
 	ggufreader "github.com/abrander/gguf"
-	"github.com/gx-org/backend/platform"
 	"github.com/gx-org/gemma/gemma/gemma_go_gx"
 	"github.com/gx-org/gguf/encoding/gguf"
 	"github.com/gx-org/gx/api"
@@ -48,10 +47,10 @@ type (
 
 	// Gemma language model.
 	Gemma struct {
-		runtime   *api.Runtime
+		device    *api.Device
 		params    Params
 		tokenizer *Tokenizer
-		gemmaGX   *gemma_go_gx.Compiler
+		gemmaGX   *gemma_go_gx.Package
 		network   *gemma_go_gx.Gemma
 	}
 )
@@ -69,8 +68,8 @@ func vocabSize(r *ggufreader.Reader) (int, error) {
 }
 
 // New Gemma language model instance.
-func New(rtm *api.Runtime, device platform.Device, params Params) (g *Gemma, err error) {
-	g = &Gemma{runtime: rtm, params: params}
+func New(device *api.Device, params Params) (g *Gemma, err error) {
+	g = &Gemma{device: device, params: params}
 	if g.tokenizer, err = g.newTokenizer(); err != nil {
 		return nil, fmt.Errorf("cannot create tokenizer: %v", err)
 	}
@@ -87,7 +86,7 @@ func New(rtm *api.Runtime, device platform.Device, params Params) (g *Gemma, err
 	if err != nil {
 		return nil, err
 	}
-	g.gemmaGX, err = gemma_go_gx.CompilerFor(g.runtime, device,
+	g.gemmaGX, err = gemma_go_gx.BuildFor(device,
 		gemma_go_gx.NumSamplingSteps.Set(int64(g.params.NumSamplingSteps)),
 		gemma_go_gx.VocabSize.Set(int64(vocabSize)),
 		gemma_go_gx.NumGemmaLayers.Set(18),

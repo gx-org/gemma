@@ -32,18 +32,18 @@ var (
 )
 
 func main() {
-	bck, err := plugin.New(*pjrtPlugin)
+	rtm, err := plugin.New(*pjrtPlugin)
 	flag.Parse()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%+v", err)
 		os.Exit(1)
 	}
-	device, err := bck.Platform().Device(0)
+	device, err := rtm.Device(0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%+v", err)
 		os.Exit(1)
 	}
-	gem, err := gemma.New(bck, device, gemma.Params{
+	gem, err := gemma.New(device, gemma.Params{
 		NumSamplingSteps: 100,
 		TokenizerModel:   *tokenizerModel,
 		InferenceModel:   *inferenceModel,
