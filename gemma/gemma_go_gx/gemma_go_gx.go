@@ -43,37 +43,39 @@ var (
 	_ = values.Struct{}
 	_ = errors.Errorf
 	_ = types.NewSlice[types.Bridger]
+	_ = platform.HostTransfer
 )
 
-// Package is the GX package built for a given backend.
-type Package struct {
+// PackageIR is the GX package intermediate representation
+// built for a given runtime, but not yet for a specific device.
+type PackageIR struct {
 	Runtime *api.Runtime
 	IR      *ir.Package
 	Tracer  state.Tracer
 }
 
 // Load the GX package for a given backend.
-func Load(rtm *api.Runtime) (*Package, error) {
-	irPackage, err := rtm.Builder().Build("github.com/gx-org/gemma/gemma")
+func Load(rtm *api.Runtime) (*PackageIR, error) {
+	bpkg, err := rtm.Builder().Build("github.com/gx-org/gemma/gemma")
 	if err != nil {
 		return nil, err
 	}
-	pkg := &Package{
+	pkg := &PackageIR{
 		Runtime: rtm,
-		IR:      irPackage,
+		IR:      bpkg.IR(),
 	}
 
 	return pkg, nil
 }
 
-// CompilerFor loads the GX package github.com/gx-org/gemma/gemma
-// then returns the compiler for a given device and options.
-func CompilerFor(rtm *api.Runtime, dev platform.Device, options ...interp.PackageOptionFactory) (*Compiler, error) {
-	pkg, err := Load(rtm)
+// BuildFor loads the GX package github.com/gx-org/gemma/gemma
+// then returns that package for a given device and options.
+func BuildFor(dev *api.Device, options ...interp.PackageOptionFactory) (*Package, error) {
+	pkg, err := Load(dev.Runtime())
 	if err != nil {
 		return nil, err
 	}
-	return pkg.CompilerFor(dev, options...), nil
+	return pkg.BuildFor(dev, options...), nil
 }
 
 // Factory create new instance of types used in the package.
@@ -81,13 +83,14 @@ func CompilerFor(rtm *api.Runtime, dev platform.Device, options ...interp.Packag
 // device and with which options methods of the instances
 // created by the factory are compiled for.
 type Factory struct {
-	Compiler *Compiler
+	Package *Package
 }
 
-// Compiler compiles GX functions for a given device.
-type Compiler struct {
-	Package *Package
-	Device  platform.Device
+// Package is a GX package for a given device.
+// Functions and methods are compiled specifically for that device.
+type Package struct {
+	Package *PackageIR
+	Device  *api.Device
 	Factory *Factory
 
 	options []interp.PackageOption
@@ -97,46 +100,46 @@ type Compiler struct {
 }
 
 // AppendOptions appends options to the compiler.
-func (cmpl *Compiler) AppendOptions(options ...interp.PackageOptionFactory) {
-	plat := cmpl.Package.Runtime.Platform()
+func (cmpl *Package) AppendOptions(options ...interp.PackageOptionFactory) {
+	plat := cmpl.Package.Runtime.Backend().Platform()
 	for _, opt := range options {
 		cmpl.options = append(cmpl.options, opt(plat))
 	}
 }
 
-// CompilerFor returns a compiler for a device and options.
-func (pkg *Package) CompilerFor(dev platform.Device, options ...interp.PackageOptionFactory) *Compiler {
-	c := &Compiler{
+// BuildFor returns a package ready to compile for a device and options.
+func (pkg *PackageIR) BuildFor(dev *api.Device, options ...interp.PackageOptionFactory) *Package {
+	c := &Package{
 		Package: pkg,
 		Device:  dev,
 	}
-	c.Factory = &Factory{Compiler: c}
+	c.Factory = &Factory{Package: c}
 	c.AppendOptions(options...)
 
 	c.methodGemmaNewSamplingState = methodBase{
-		compiler: c,
-		function: c.Package.IR.Types[1].Methods[0].(*ir.FuncDecl),
+		pkg:      c,
+		function: c.Package.IR.Types[0].Methods[0],
 	}
 	c.methodGemmaSampleStep = methodBase{
-		compiler: c,
-		function: c.Package.IR.Types[1].Methods[1].(*ir.FuncDecl),
+		pkg:      c,
+		function: c.Package.IR.Types[0].Methods[1],
 	}
 
 	return c
 }
 
-var VocabSize VocabSizeStatic
+var FFHiddenDim FFHiddenDimStatic
 
-type VocabSizeStatic struct {
+type FFHiddenDimStatic struct {
 	value ir.Int
 }
 
-func (VocabSizeStatic) Set(value ir.Int) interp.PackageOptionFactory {
+func (FFHiddenDimStatic) Set(value ir.Int) interp.PackageOptionFactory {
 	return func(plat platform.Platform) interp.PackageOption {
 		hostValue := types.DefaultInt(value)
 		return interp.PackageVarSetValue{
 			Pkg:   "github.com/gx-org/gemma/gemma",
-			Var:   "VocabSize",
+			Var:   "FFHiddenDim",
 			Value: hostValue.GXValue(),
 		}
 	}
@@ -159,35 +162,18 @@ func (ModelDimStatic) Set(value ir.Int) interp.PackageOptionFactory {
 	}
 }
 
-var FFHiddenDim FFHiddenDimStatic
+var NumGemmaLayers NumGemmaLayersStatic
 
-type FFHiddenDimStatic struct {
+type NumGemmaLayersStatic struct {
 	value ir.Int
 }
 
-func (FFHiddenDimStatic) Set(value ir.Int) interp.PackageOptionFactory {
+func (NumGemmaLayersStatic) Set(value ir.Int) interp.PackageOptionFactory {
 	return func(plat platform.Platform) interp.PackageOption {
 		hostValue := types.DefaultInt(value)
 		return interp.PackageVarSetValue{
 			Pkg:   "github.com/gx-org/gemma/gemma",
-			Var:   "FFHiddenDim",
-			Value: hostValue.GXValue(),
-		}
-	}
-}
-
-var QKVDim QKVDimStatic
-
-type QKVDimStatic struct {
-	value ir.Int
-}
-
-func (QKVDimStatic) Set(value ir.Int) interp.PackageOptionFactory {
-	return func(plat platform.Platform) interp.PackageOption {
-		hostValue := types.DefaultInt(value)
-		return interp.PackageVarSetValue{
-			Pkg:   "github.com/gx-org/gemma/gemma",
-			Var:   "QKVDim",
+			Var:   "NumGemmaLayers",
 			Value: hostValue.GXValue(),
 		}
 	}
@@ -205,23 +191,6 @@ func (NumHeadsStatic) Set(value ir.Int) interp.PackageOptionFactory {
 		return interp.PackageVarSetValue{
 			Pkg:   "github.com/gx-org/gemma/gemma",
 			Var:   "NumHeads",
-			Value: hostValue.GXValue(),
-		}
-	}
-}
-
-var NumGemmaLayers NumGemmaLayersStatic
-
-type NumGemmaLayersStatic struct {
-	value ir.Int
-}
-
-func (NumGemmaLayersStatic) Set(value ir.Int) interp.PackageOptionFactory {
-	return func(plat platform.Platform) interp.PackageOption {
-		hostValue := types.DefaultInt(value)
-		return interp.PackageVarSetValue{
-			Pkg:   "github.com/gx-org/gemma/gemma",
-			Var:   "NumGemmaLayers",
 			Value: hostValue.GXValue(),
 		}
 	}
@@ -261,11 +230,387 @@ func (PromptLengthStatic) Set(value ir.Int) interp.PackageOptionFactory {
 	}
 }
 
+var QKVDim QKVDimStatic
+
+type QKVDimStatic struct {
+	value ir.Int
+}
+
+func (QKVDimStatic) Set(value ir.Int) interp.PackageOptionFactory {
+	return func(plat platform.Platform) interp.PackageOption {
+		hostValue := types.DefaultInt(value)
+		return interp.PackageVarSetValue{
+			Pkg:   "github.com/gx-org/gemma/gemma",
+			Var:   "QKVDim",
+			Value: hostValue.GXValue(),
+		}
+	}
+}
+
+var VocabSize VocabSizeStatic
+
+type VocabSizeStatic struct {
+	value ir.Int
+}
+
+func (VocabSizeStatic) Set(value ir.Int) interp.PackageOptionFactory {
+	return func(plat platform.Platform) interp.PackageOption {
+		hostValue := types.DefaultInt(value)
+		return interp.PackageVarSetValue{
+			Pkg:   "github.com/gx-org/gemma/gemma",
+			Var:   "VocabSize",
+			Value: hostValue.GXValue(),
+		}
+	}
+}
+
+// handleGemma stores the backend handles of Gemma.
+type handleGemma struct {
+	pkg   *Package
+	struc *ir.NamedType
+	owner *Gemma
+
+	runnerNewSamplingState *MethodGemmaNewSamplingState
+
+	runnerSampleStep *MethodGemmaSampleStep
+}
+
+// MethodGemmaNewSamplingState compiles and runs the GX function NewSamplingState for a device.
+// NewSamplingState returns a new sampling state from the initial prompt.
+type MethodGemmaNewSamplingState struct {
+	methodBase
+	receiver handleGemma
+}
+
+// MethodGemmaSampleStep compiles and runs the GX function SampleStep for a device.
+// SampleStep runs a sample step and returns the new state.
+type MethodGemmaSampleStep struct {
+	methodBase
+	receiver handleGemma
+}
+
+// Run first compiles NewSamplingState for a given device and the given arguments.
+// Once compiled, the function is then run with these same arguments.
+// If the shape of the arguments change, the function will panic.
+func (f *MethodGemmaNewSamplingState) Run(arg0 types.Array[int32]) (_ *SamplingState, _ types.Array[float32], _ types.Atom[int64], err error) {
+	var args []values.Value = []values.Value{
+		arg0.Bridge().GXValue(), // prompt [NumSamplingSteps+1]int32
+	}
+	if f.runner == nil {
+		f.runner, err = interp.Compile(f.pkg.Device, f.function.(*ir.FuncDecl), f.receiver.GXValue(), args, f.pkg.options)
+		if err != nil {
+			return
+		}
+	}
+	var outputs []values.Value
+	outputs, err = f.runner.Run(f.receiver.GXValue(), args, f.pkg.Package.Tracer)
+	if err != nil {
+		return
+	}
+
+	cmpl := f.pkg
+	var out0 *SamplingState
+	out0, err = cmpl.MarshalSamplingState(outputs[0])
+	if err != nil {
+		return
+	}
+
+	out1Value, ok := outputs[1].(values.Array)
+	if !ok {
+		err = errors.Errorf("cannot cast %T to %s", outputs[1], reflect.TypeFor[*values.DeviceArray]().Name())
+		return
+	}
+	out1 := types.NewArray[float32](out1Value)
+
+	out2Value, ok := outputs[2].(values.Array)
+	if !ok {
+		err = errors.Errorf("cannot cast %T to %s", outputs[2], reflect.TypeFor[*values.DeviceArray]().Name())
+		return
+	}
+	out2 := types.NewAtom[int64](out2Value)
+
+	return out0, out1, out2, nil
+}
+
+// Run first compiles SampleStep for a given device and the given arguments.
+// Once compiled, the function is then run with these same arguments.
+// If the shape of the arguments change, the function will panic.
+func (f *MethodGemmaSampleStep) Run(arg0 *SamplingState) (_ *SamplingState, _ types.Array[float32], _ types.Atom[int64], err error) {
+	var args []values.Value = []values.Value{
+		arg0.Bridge().GXValue(), // state gemma.SamplingState
+	}
+	if f.runner == nil {
+		f.runner, err = interp.Compile(f.pkg.Device, f.function.(*ir.FuncDecl), f.receiver.GXValue(), args, f.pkg.options)
+		if err != nil {
+			return
+		}
+	}
+	var outputs []values.Value
+	outputs, err = f.runner.Run(f.receiver.GXValue(), args, f.pkg.Package.Tracer)
+	if err != nil {
+		return
+	}
+
+	cmpl := f.pkg
+	var out0 *SamplingState
+	out0, err = cmpl.MarshalSamplingState(outputs[0])
+	if err != nil {
+		return
+	}
+
+	out1Value, ok := outputs[1].(values.Array)
+	if !ok {
+		err = errors.Errorf("cannot cast %T to %s", outputs[1], reflect.TypeFor[*values.DeviceArray]().Name())
+		return
+	}
+	out1 := types.NewArray[float32](out1Value)
+
+	out2Value, ok := outputs[2].(values.Array)
+	if !ok {
+		err = errors.Errorf("cannot cast %T to %s", outputs[2], reflect.TypeFor[*values.DeviceArray]().Name())
+		return
+	}
+	out2 := types.NewAtom[int64](out2Value)
+
+	return out0, out1, out2, nil
+}
+
+// Type of the value.
+func (h *handleGemma) Type() ir.Type {
+	return h.struc
+}
+
+// NamedType returns the intermediate representation of the type.
+func (h *handleGemma) NamedType() *ir.NamedType {
+	return h.struc
+}
+
+// Bridger returns the Go object owning this handle.
+func (h *handleGemma) Bridger() types.Bridger {
+	return h.owner
+}
+
+// GXValue returns the GX value.
+func (h *handleGemma) GXValue() values.Value {
+	return h.owner.value
+}
+
+// String representation of the handle.
+func (h *handleGemma) String() string {
+	bld := strings.Builder{}
+	bld.WriteString("Gemma{\n")
+
+	bld.WriteString(fmt.Sprintf("%s:%s\n", "TokenEmbedding", any(h.owner.TokenEmbedding).(fmt.Stringer).String()))
+
+	bld.WriteString(fmt.Sprintf("%s:%s\n", "Layers", any(h.owner.Layers).(fmt.Stringer).String()))
+
+	bld.WriteString(fmt.Sprintf("%s:%s\n", "FinalNormScale", any(h.owner.FinalNormScale).(fmt.Stringer).String()))
+
+	bld.WriteString("}")
+	return bld.String()
+}
+
+// Gemma stores the handle of Gemma on a device.
+type Gemma struct {
+	handle handleGemma
+	value  *values.Struct
+
+	TokenEmbedding types.Array[float32]
+
+	Layers *types.Slice[*Layer]
+
+	FinalNormScale types.Array[float32]
+}
+
+var (
+	_ types.Bridger      = (*Gemma)(nil)
+	_ types.StructBridge = (*handleGemma)(nil)
+)
+
+// StructValue returns the GX value of the structure.
+func (h *handleGemma) StructValue() *values.Struct {
+	return h.owner.value
+}
+
+// MarshalGemma populates the receiver fields with device handles.
+func (cmpl *Package) MarshalGemma(val values.Value) (s *Gemma, err error) {
+	s = cmpl.Factory.NewGemma()
+	var ok bool
+	s.value, ok = val.(*values.Struct)
+	if !ok {
+		err = fmt.Errorf("cannot use handle to set Gemma: %T is not a %s", val, reflect.TypeFor[*values.Struct]().Name())
+		return
+	}
+	fields := make([]values.Value, s.value.StructType().NumFields())
+	for i, field := range s.value.StructType().Fields.Fields() {
+		fields[i] = s.value.FieldValue(field.Name.Name)
+	}
+
+	field0Value, ok := fields[0].(values.Array)
+	if !ok {
+		err = errors.Errorf("cannot cast %T to %s", fields[0], reflect.TypeFor[*values.DeviceArray]().Name())
+		return
+	}
+	field0 := types.NewArray[float32](field0Value)
+
+	field1Slice, ok := fields[1].(*values.Slice)
+	if !ok {
+		err = fmt.Errorf("cannot use value %T to set []<no value>: not a slice", fields[1])
+		return
+	}
+	field1Elements := make([]*Layer, field1Slice.Size())
+	for i := 0; i < field1Slice.Size(); i++ {
+		field1HandleI := field1Slice.Element(i)
+		var field1ElmtI *Layer
+		field1ElmtI, err = cmpl.MarshalLayer(field1HandleI)
+		if err != nil {
+			return
+		}
+		field1Elements[i] = field1ElmtI
+	}
+	field1, err := types.NewSlice[*Layer](
+		field1Slice.SliceType(),
+		field1Elements,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	field2Value, ok := fields[2].(values.Array)
+	if !ok {
+		err = errors.Errorf("cannot cast %T to %s", fields[2], reflect.TypeFor[*values.DeviceArray]().Name())
+		return
+	}
+	field2 := types.NewArray[float32](field2Value)
+
+	s.TokenEmbedding = field0
+	s.Layers = field1
+	s.FinalNormScale = field2
+	return
+}
+
+func (s Gemma) String() string {
+	return s.handle.String()
+}
+
+// Bridge returns the bridge between the Go value and the GX value.
+func (s *Gemma) Bridge() types.Bridge { return &s.handle }
+
+// NewSamplingState returns a handle to compile method NewSamplingState for a device.
+func (s Gemma) NewSamplingState() *MethodGemmaNewSamplingState {
+	return s.handle.runnerNewSamplingState
+}
+
+// SampleStep returns a handle to compile method SampleStep for a device.
+func (s Gemma) SampleStep() *MethodGemmaSampleStep {
+	return s.handle.runnerSampleStep
+}
+
+// handleKVCache stores the backend handles of KVCache.
+type handleKVCache struct {
+	pkg   *Package
+	struc *ir.NamedType
+	owner *KVCache
+}
+
+// Type of the value.
+func (h *handleKVCache) Type() ir.Type {
+	return h.struc
+}
+
+// NamedType returns the intermediate representation of the type.
+func (h *handleKVCache) NamedType() *ir.NamedType {
+	return h.struc
+}
+
+// Bridger returns the Go object owning this handle.
+func (h *handleKVCache) Bridger() types.Bridger {
+	return h.owner
+}
+
+// GXValue returns the GX value.
+func (h *handleKVCache) GXValue() values.Value {
+	return h.owner.value
+}
+
+// String representation of the handle.
+func (h *handleKVCache) String() string {
+	bld := strings.Builder{}
+	bld.WriteString("KVCache{\n")
+
+	bld.WriteString(fmt.Sprintf("%s:%s\n", "ks", any(h.owner.ks).(fmt.Stringer).String()))
+
+	bld.WriteString(fmt.Sprintf("%s:%s\n", "vs", any(h.owner.vs).(fmt.Stringer).String()))
+
+	bld.WriteString("}")
+	return bld.String()
+}
+
+// KVCache stores the handle of KVCache on a device.
+type KVCache struct {
+	handle handleKVCache
+	value  *values.Struct
+
+	ks types.Array[float32]
+
+	vs types.Array[float32]
+}
+
+var (
+	_ types.Bridger      = (*KVCache)(nil)
+	_ types.StructBridge = (*handleKVCache)(nil)
+)
+
+// StructValue returns the GX value of the structure.
+func (h *handleKVCache) StructValue() *values.Struct {
+	return h.owner.value
+}
+
+// MarshalKVCache populates the receiver fields with device handles.
+func (cmpl *Package) MarshalKVCache(val values.Value) (s *KVCache, err error) {
+	s = cmpl.Factory.NewKVCache()
+	var ok bool
+	s.value, ok = val.(*values.Struct)
+	if !ok {
+		err = fmt.Errorf("cannot use handle to set KVCache: %T is not a %s", val, reflect.TypeFor[*values.Struct]().Name())
+		return
+	}
+	fields := make([]values.Value, s.value.StructType().NumFields())
+	for i, field := range s.value.StructType().Fields.Fields() {
+		fields[i] = s.value.FieldValue(field.Name.Name)
+	}
+
+	field0Value, ok := fields[0].(values.Array)
+	if !ok {
+		err = errors.Errorf("cannot cast %T to %s", fields[0], reflect.TypeFor[*values.DeviceArray]().Name())
+		return
+	}
+	field0 := types.NewArray[float32](field0Value)
+
+	field1Value, ok := fields[1].(values.Array)
+	if !ok {
+		err = errors.Errorf("cannot cast %T to %s", fields[1], reflect.TypeFor[*values.DeviceArray]().Name())
+		return
+	}
+	field1 := types.NewArray[float32](field1Value)
+
+	s.ks = field0
+	s.vs = field1
+	return
+}
+
+func (s KVCache) String() string {
+	return s.handle.String()
+}
+
+// Bridge returns the bridge between the Go value and the GX value.
+func (s *KVCache) Bridge() types.Bridge { return &s.handle }
+
 // handleLayer stores the backend handles of Layer.
 type handleLayer struct {
-	compiler *Compiler
-	struc    *ir.NamedType
-	owner    *Layer
+	pkg   *Package
+	struc *ir.NamedType
+	owner *Layer
 }
 
 // Type of the value.
@@ -350,7 +695,7 @@ func (h *handleLayer) StructValue() *values.Struct {
 }
 
 // MarshalLayer populates the receiver fields with device handles.
-func (cmpl *Compiler) MarshalLayer(val values.Value) (s *Layer, err error) {
+func (cmpl *Package) MarshalLayer(val values.Value) (s *Layer, err error) {
 	s = cmpl.Factory.NewLayer()
 	var ok bool
 	s.value, ok = val.(*values.Struct)
@@ -359,8 +704,8 @@ func (cmpl *Compiler) MarshalLayer(val values.Value) (s *Layer, err error) {
 		return
 	}
 	fields := make([]values.Value, s.value.StructType().NumFields())
-	for i := range fields {
-		fields[i] = s.value.FieldValue(i)
+	for i, field := range s.value.StructType().Fields.Fields() {
+		fields[i] = s.value.FieldValue(field.Name.Name)
 	}
 
 	field0Value, ok := fields[0].(values.Array)
@@ -445,353 +790,11 @@ func (s Layer) String() string {
 // Bridge returns the bridge between the Go value and the GX value.
 func (s *Layer) Bridge() types.Bridge { return &s.handle }
 
-// handleGemma stores the backend handles of Gemma.
-type handleGemma struct {
-	compiler *Compiler
-	struc    *ir.NamedType
-	owner    *Gemma
-
-	runnerNewSamplingState *MethodGemmaNewSamplingState
-
-	runnerSampleStep *MethodGemmaSampleStep
-}
-
-// MethodGemmaNewSamplingState compiles and runs the GX function NewSamplingState for a device.
-// NewSamplingState returns a new sampling state from the initial prompt.
-type MethodGemmaNewSamplingState struct {
-	methodBase
-	receiver handleGemma
-}
-
-// MethodGemmaSampleStep compiles and runs the GX function SampleStep for a device.
-// SampleStep runs a sample step and returns the new state.
-type MethodGemmaSampleStep struct {
-	methodBase
-	receiver handleGemma
-}
-
-// Run first compiles NewSamplingState for a given device and the given arguments.
-// Once compiled, the function is then run with these same arguments.
-// If the shape of the arguments change, the function will panic.
-func (f *MethodGemmaNewSamplingState) Run(arg0 types.Array[int32]) (_ *SamplingState, _ types.Array[float32], _ types.Atom[int64], err error) {
-	var args []values.Value = []values.Value{
-		arg0.Bridge().GXValue(), // prompt [NumSamplingSteps+1]int32
-	}
-	if f.runner == nil {
-		f.runner, err = f.compiler.Package.Runtime.Compile(f.compiler.Device, f.function, f.receiver.GXValue(), args, f.compiler.options)
-		if err != nil {
-			return
-		}
-	}
-	var outputs []values.Value
-	outputs, err = f.runner.Run(f.receiver.GXValue(), args, f.compiler.Package.Tracer)
-	if err != nil {
-		return
-	}
-
-	cmpl := f.compiler
-	var out0 *SamplingState
-	out0, err = cmpl.MarshalSamplingState(outputs[0])
-	if err != nil {
-		return
-	}
-
-	out1Value, ok := outputs[1].(values.Array)
-	if !ok {
-		err = errors.Errorf("cannot cast %T to %s", outputs[1], reflect.TypeFor[*values.DeviceArray]().Name())
-		return
-	}
-	out1 := types.NewArray[float32](out1Value)
-
-	out2Value, ok := outputs[2].(values.Array)
-	if !ok {
-		err = errors.Errorf("cannot cast %T to %s", outputs[2], reflect.TypeFor[*values.DeviceArray]().Name())
-		return
-	}
-	out2 := types.NewAtom[int64](out2Value)
-
-	return out0, out1, out2, nil
-}
-
-// Run first compiles SampleStep for a given device and the given arguments.
-// Once compiled, the function is then run with these same arguments.
-// If the shape of the arguments change, the function will panic.
-func (f *MethodGemmaSampleStep) Run(arg0 *SamplingState) (_ *SamplingState, _ types.Array[float32], _ types.Atom[int64], err error) {
-	var args []values.Value = []values.Value{
-		arg0.Bridge().GXValue(), // state gemma.SamplingState
-	}
-	if f.runner == nil {
-		f.runner, err = f.compiler.Package.Runtime.Compile(f.compiler.Device, f.function, f.receiver.GXValue(), args, f.compiler.options)
-		if err != nil {
-			return
-		}
-	}
-	var outputs []values.Value
-	outputs, err = f.runner.Run(f.receiver.GXValue(), args, f.compiler.Package.Tracer)
-	if err != nil {
-		return
-	}
-
-	cmpl := f.compiler
-	var out0 *SamplingState
-	out0, err = cmpl.MarshalSamplingState(outputs[0])
-	if err != nil {
-		return
-	}
-
-	out1Value, ok := outputs[1].(values.Array)
-	if !ok {
-		err = errors.Errorf("cannot cast %T to %s", outputs[1], reflect.TypeFor[*values.DeviceArray]().Name())
-		return
-	}
-	out1 := types.NewArray[float32](out1Value)
-
-	out2Value, ok := outputs[2].(values.Array)
-	if !ok {
-		err = errors.Errorf("cannot cast %T to %s", outputs[2], reflect.TypeFor[*values.DeviceArray]().Name())
-		return
-	}
-	out2 := types.NewAtom[int64](out2Value)
-
-	return out0, out1, out2, nil
-}
-
-// Type of the value.
-func (h *handleGemma) Type() ir.Type {
-	return h.struc
-}
-
-// NamedType returns the intermediate representation of the type.
-func (h *handleGemma) NamedType() *ir.NamedType {
-	return h.struc
-}
-
-// Bridger returns the Go object owning this handle.
-func (h *handleGemma) Bridger() types.Bridger {
-	return h.owner
-}
-
-// GXValue returns the GX value.
-func (h *handleGemma) GXValue() values.Value {
-	return h.owner.value
-}
-
-// String representation of the handle.
-func (h *handleGemma) String() string {
-	bld := strings.Builder{}
-	bld.WriteString("Gemma{\n")
-
-	bld.WriteString(fmt.Sprintf("%s:%s\n", "TokenEmbedding", any(h.owner.TokenEmbedding).(fmt.Stringer).String()))
-
-	bld.WriteString(fmt.Sprintf("%s:%s\n", "Layers", any(h.owner.Layers).(fmt.Stringer).String()))
-
-	bld.WriteString(fmt.Sprintf("%s:%s\n", "FinalNormScale", any(h.owner.FinalNormScale).(fmt.Stringer).String()))
-
-	bld.WriteString("}")
-	return bld.String()
-}
-
-// Gemma stores the handle of Gemma on a device.
-type Gemma struct {
-	handle handleGemma
-	value  *values.Struct
-
-	TokenEmbedding types.Array[float32]
-
-	Layers *types.Slice[*Layer]
-
-	FinalNormScale types.Array[float32]
-}
-
-var (
-	_ types.Bridger      = (*Gemma)(nil)
-	_ types.StructBridge = (*handleGemma)(nil)
-)
-
-// StructValue returns the GX value of the structure.
-func (h *handleGemma) StructValue() *values.Struct {
-	return h.owner.value
-}
-
-// MarshalGemma populates the receiver fields with device handles.
-func (cmpl *Compiler) MarshalGemma(val values.Value) (s *Gemma, err error) {
-	s = cmpl.Factory.NewGemma()
-	var ok bool
-	s.value, ok = val.(*values.Struct)
-	if !ok {
-		err = fmt.Errorf("cannot use handle to set Gemma: %T is not a %s", val, reflect.TypeFor[*values.Struct]().Name())
-		return
-	}
-	fields := make([]values.Value, s.value.StructType().NumFields())
-	for i := range fields {
-		fields[i] = s.value.FieldValue(i)
-	}
-
-	field0Value, ok := fields[0].(values.Array)
-	if !ok {
-		err = errors.Errorf("cannot cast %T to %s", fields[0], reflect.TypeFor[*values.DeviceArray]().Name())
-		return
-	}
-	field0 := types.NewArray[float32](field0Value)
-
-	field1Slice, ok := fields[1].(*values.Slice)
-	if !ok {
-		err = fmt.Errorf("cannot use value %T to set []<no value>: not a slice", fields[1])
-		return
-	}
-	field1Elements := make([]*Layer, field1Slice.Size())
-	for i := 0; i < field1Slice.Size(); i++ {
-		field1HandleI := field1Slice.Element(i)
-		var field1ElmtI *Layer
-		field1ElmtI, err = cmpl.MarshalLayer(field1HandleI)
-		if err != nil {
-			return
-		}
-		field1Elements[i] = field1ElmtI
-	}
-	field1, err := types.NewSlice[*Layer](
-		field1Slice.SliceType(),
-		field1Elements,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	field2Value, ok := fields[2].(values.Array)
-	if !ok {
-		err = errors.Errorf("cannot cast %T to %s", fields[2], reflect.TypeFor[*values.DeviceArray]().Name())
-		return
-	}
-	field2 := types.NewArray[float32](field2Value)
-
-	s.TokenEmbedding = field0
-	s.Layers = field1
-	s.FinalNormScale = field2
-	return
-}
-
-func (s Gemma) String() string {
-	return s.handle.String()
-}
-
-// Bridge returns the bridge between the Go value and the GX value.
-func (s *Gemma) Bridge() types.Bridge { return &s.handle }
-
-// NewSamplingState returns a handle to compile method NewSamplingState for a device.
-func (s Gemma) NewSamplingState() *MethodGemmaNewSamplingState {
-	return s.handle.runnerNewSamplingState
-}
-
-// SampleStep returns a handle to compile method SampleStep for a device.
-func (s Gemma) SampleStep() *MethodGemmaSampleStep {
-	return s.handle.runnerSampleStep
-}
-
-// handleKVCache stores the backend handles of KVCache.
-type handleKVCache struct {
-	compiler *Compiler
-	struc    *ir.NamedType
-	owner    *KVCache
-}
-
-// Type of the value.
-func (h *handleKVCache) Type() ir.Type {
-	return h.struc
-}
-
-// NamedType returns the intermediate representation of the type.
-func (h *handleKVCache) NamedType() *ir.NamedType {
-	return h.struc
-}
-
-// Bridger returns the Go object owning this handle.
-func (h *handleKVCache) Bridger() types.Bridger {
-	return h.owner
-}
-
-// GXValue returns the GX value.
-func (h *handleKVCache) GXValue() values.Value {
-	return h.owner.value
-}
-
-// String representation of the handle.
-func (h *handleKVCache) String() string {
-	bld := strings.Builder{}
-	bld.WriteString("KVCache{\n")
-
-	bld.WriteString(fmt.Sprintf("%s:%s\n", "ks", any(h.owner.ks).(fmt.Stringer).String()))
-
-	bld.WriteString(fmt.Sprintf("%s:%s\n", "vs", any(h.owner.vs).(fmt.Stringer).String()))
-
-	bld.WriteString("}")
-	return bld.String()
-}
-
-// KVCache stores the handle of KVCache on a device.
-type KVCache struct {
-	handle handleKVCache
-	value  *values.Struct
-
-	ks types.Array[float32]
-
-	vs types.Array[float32]
-}
-
-var (
-	_ types.Bridger      = (*KVCache)(nil)
-	_ types.StructBridge = (*handleKVCache)(nil)
-)
-
-// StructValue returns the GX value of the structure.
-func (h *handleKVCache) StructValue() *values.Struct {
-	return h.owner.value
-}
-
-// MarshalKVCache populates the receiver fields with device handles.
-func (cmpl *Compiler) MarshalKVCache(val values.Value) (s *KVCache, err error) {
-	s = cmpl.Factory.NewKVCache()
-	var ok bool
-	s.value, ok = val.(*values.Struct)
-	if !ok {
-		err = fmt.Errorf("cannot use handle to set KVCache: %T is not a %s", val, reflect.TypeFor[*values.Struct]().Name())
-		return
-	}
-	fields := make([]values.Value, s.value.StructType().NumFields())
-	for i := range fields {
-		fields[i] = s.value.FieldValue(i)
-	}
-
-	field0Value, ok := fields[0].(values.Array)
-	if !ok {
-		err = errors.Errorf("cannot cast %T to %s", fields[0], reflect.TypeFor[*values.DeviceArray]().Name())
-		return
-	}
-	field0 := types.NewArray[float32](field0Value)
-
-	field1Value, ok := fields[1].(values.Array)
-	if !ok {
-		err = errors.Errorf("cannot cast %T to %s", fields[1], reflect.TypeFor[*values.DeviceArray]().Name())
-		return
-	}
-	field1 := types.NewArray[float32](field1Value)
-
-	s.ks = field0
-	s.vs = field1
-	return
-}
-
-func (s KVCache) String() string {
-	return s.handle.String()
-}
-
-// Bridge returns the bridge between the Go value and the GX value.
-func (s *KVCache) Bridge() types.Bridge { return &s.handle }
-
 // handleSamplingState stores the backend handles of SamplingState.
 type handleSamplingState struct {
-	compiler *Compiler
-	struc    *ir.NamedType
-	owner    *SamplingState
+	pkg   *Package
+	struc *ir.NamedType
+	owner *SamplingState
 }
 
 // Type of the value.
@@ -856,7 +859,7 @@ func (h *handleSamplingState) StructValue() *values.Struct {
 }
 
 // MarshalSamplingState populates the receiver fields with device handles.
-func (cmpl *Compiler) MarshalSamplingState(val values.Value) (s *SamplingState, err error) {
+func (cmpl *Package) MarshalSamplingState(val values.Value) (s *SamplingState, err error) {
 	s = cmpl.Factory.NewSamplingState()
 	var ok bool
 	s.value, ok = val.(*values.Struct)
@@ -865,8 +868,8 @@ func (cmpl *Compiler) MarshalSamplingState(val values.Value) (s *SamplingState, 
 		return
 	}
 	fields := make([]values.Value, s.value.StructType().NumFields())
-	for i := range fields {
-		fields[i] = s.value.FieldValue(i)
+	for i, field := range s.value.StructType().Fields.Fields() {
+		fields[i] = s.value.FieldValue(field.Name.Name)
 	}
 
 	field0Value, ok := fields[0].(values.Array)
@@ -910,19 +913,180 @@ func (s SamplingState) String() string {
 func (s *SamplingState) Bridge() types.Bridge { return &s.handle }
 
 type methodBase struct {
-	compiler *Compiler
-	function *ir.FuncDecl
+	pkg      *Package
+	function ir.Func
 	runner   *state.CompiledGraph
+}
+
+// NewGemma returns a handle on named type Gemma.
+func (fac *Factory) NewGemma() *Gemma {
+	s := &Gemma{}
+	typ := fac.Package.Package.IR.Types[0]
+	s.handle = handleGemma{
+		pkg:   fac.Package,
+		struc: typ,
+		owner: s,
+	}
+
+	var err error
+	s.value, err = values.NewStruct(typ, nil)
+	if err != nil {
+		panic(err)
+	}
+
+	s.handle.runnerNewSamplingState = &MethodGemmaNewSamplingState{
+		methodBase: s.handle.pkg.methodGemmaNewSamplingState,
+		receiver:   s.handle,
+	}
+
+	s.handle.runnerSampleStep = &MethodGemmaSampleStep{
+		methodBase: s.handle.pkg.methodGemmaSampleStep,
+		receiver:   s.handle,
+	}
+
+	return s
+}
+
+var _ types.Bridge = (*handleGemma)(nil)
+
+func (h *handleGemma) NewFromField(field *ir.Field) (types.Bridge, error) {
+	name := field.Name.Name
+	switch name {
+
+	case "TokenEmbedding":
+		return nil, errors.Errorf("cannot create a new instance for field TokenEmbedding: type types.Array[float32] not supported")
+
+	case "Layers":
+		slice, err := types.NewEmptySlice[*Layer](field.Type(), func() (types.Bridge, error) {
+			return h.pkg.Factory.NewLayer().Bridge(), nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		return slice.Bridge(), nil
+
+	case "FinalNormScale":
+		return nil, errors.Errorf("cannot create a new instance for field FinalNormScale: type types.Array[float32] not supported")
+
+	default:
+		return nil, errors.Errorf("structure Gemma has no field %q", name)
+	}
+}
+
+// SetField sets a field in the structure.
+func (h *handleGemma) SetField(field *ir.Field, val types.Bridge) error {
+	name := field.Name.Name
+	switch name {
+
+	case "TokenEmbedding":
+		bridger := val.Bridger()
+		fieldValue, ok := bridger.(types.Array[float32])
+		if !ok {
+			return errors.Errorf("cannot set field TokenEmbedding: cannot cast %T to types.Array[float32]", bridger)
+		}
+		h.owner.TokenEmbedding = fieldValue
+		h.owner.value.SetField("TokenEmbedding", val.GXValue())
+		return nil
+
+	case "Layers":
+		bridger := val.Bridger()
+		fieldValue, ok := bridger.(*types.Slice[*Layer])
+		if !ok {
+			return errors.Errorf("cannot set field Layers: cannot cast %T to *types.Slice[*Layer]", bridger)
+		}
+		h.owner.Layers = fieldValue
+		h.owner.value.SetField("Layers", val.GXValue())
+		return nil
+
+	case "FinalNormScale":
+		bridger := val.Bridger()
+		fieldValue, ok := bridger.(types.Array[float32])
+		if !ok {
+			return errors.Errorf("cannot set field FinalNormScale: cannot cast %T to types.Array[float32]", bridger)
+		}
+		h.owner.FinalNormScale = fieldValue
+		h.owner.value.SetField("FinalNormScale", val.GXValue())
+		return nil
+
+	default:
+		return errors.Errorf("structure Gemma has no field %q", name)
+	}
+}
+
+// NewKVCache returns a handle on named type KVCache.
+func (fac *Factory) NewKVCache() *KVCache {
+	s := &KVCache{}
+	typ := fac.Package.Package.IR.Types[1]
+	s.handle = handleKVCache{
+		pkg:   fac.Package,
+		struc: typ,
+		owner: s,
+	}
+
+	var err error
+	s.value, err = values.NewStruct(typ, nil)
+	if err != nil {
+		panic(err)
+	}
+
+	return s
+}
+
+var _ types.Bridge = (*handleKVCache)(nil)
+
+func (h *handleKVCache) NewFromField(field *ir.Field) (types.Bridge, error) {
+	name := field.Name.Name
+	switch name {
+
+	case "ks":
+		return nil, errors.Errorf("cannot create a new instance for field ks: type types.Array[float32] not supported")
+
+	case "vs":
+		return nil, errors.Errorf("cannot create a new instance for field vs: type types.Array[float32] not supported")
+
+	default:
+		return nil, errors.Errorf("structure KVCache has no field %q", name)
+	}
+}
+
+// SetField sets a field in the structure.
+func (h *handleKVCache) SetField(field *ir.Field, val types.Bridge) error {
+	name := field.Name.Name
+	switch name {
+
+	case "ks":
+		bridger := val.Bridger()
+		fieldValue, ok := bridger.(types.Array[float32])
+		if !ok {
+			return errors.Errorf("cannot set field ks: cannot cast %T to types.Array[float32]", bridger)
+		}
+		h.owner.ks = fieldValue
+		h.owner.value.SetField("ks", val.GXValue())
+		return nil
+
+	case "vs":
+		bridger := val.Bridger()
+		fieldValue, ok := bridger.(types.Array[float32])
+		if !ok {
+			return errors.Errorf("cannot set field vs: cannot cast %T to types.Array[float32]", bridger)
+		}
+		h.owner.vs = fieldValue
+		h.owner.value.SetField("vs", val.GXValue())
+		return nil
+
+	default:
+		return errors.Errorf("structure KVCache has no field %q", name)
+	}
 }
 
 // NewLayer returns a handle on named type Layer.
 func (fac *Factory) NewLayer() *Layer {
 	s := &Layer{}
-	typ := fac.Compiler.Package.IR.Types[0]
+	typ := fac.Package.Package.IR.Types[2]
 	s.handle = handleLayer{
-		compiler: fac.Compiler,
-		struc:    typ,
-		owner:    s,
+		pkg:   fac.Package,
+		struc: typ,
+		owner: s,
 	}
 
 	var err error
@@ -984,7 +1148,7 @@ func (h *handleLayer) SetField(field *ir.Field, val types.Bridge) error {
 			return errors.Errorf("cannot set field PreAttNorm: cannot cast %T to types.Array[float32]", bridger)
 		}
 		h.owner.PreAttNorm = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("PreAttNorm", val.GXValue())
 		return nil
 
 	case "Attention":
@@ -994,7 +1158,7 @@ func (h *handleLayer) SetField(field *ir.Field, val types.Bridge) error {
 			return errors.Errorf("cannot set field Attention: cannot cast %T to types.Array[float32]", bridger)
 		}
 		h.owner.Attention = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("Attention", val.GXValue())
 		return nil
 
 	case "Queries":
@@ -1004,7 +1168,7 @@ func (h *handleLayer) SetField(field *ir.Field, val types.Bridge) error {
 			return errors.Errorf("cannot set field Queries: cannot cast %T to types.Array[float32]", bridger)
 		}
 		h.owner.Queries = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("Queries", val.GXValue())
 		return nil
 
 	case "Keys":
@@ -1014,7 +1178,7 @@ func (h *handleLayer) SetField(field *ir.Field, val types.Bridge) error {
 			return errors.Errorf("cannot set field Keys: cannot cast %T to types.Array[float32]", bridger)
 		}
 		h.owner.Keys = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("Keys", val.GXValue())
 		return nil
 
 	case "Values":
@@ -1024,7 +1188,7 @@ func (h *handleLayer) SetField(field *ir.Field, val types.Bridge) error {
 			return errors.Errorf("cannot set field Values: cannot cast %T to types.Array[float32]", bridger)
 		}
 		h.owner.Values = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("Values", val.GXValue())
 		return nil
 
 	case "PreNorm":
@@ -1034,7 +1198,7 @@ func (h *handleLayer) SetField(field *ir.Field, val types.Bridge) error {
 			return errors.Errorf("cannot set field PreNorm: cannot cast %T to types.Array[float32]", bridger)
 		}
 		h.owner.PreNorm = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("PreNorm", val.GXValue())
 		return nil
 
 	case "UpGate":
@@ -1044,7 +1208,7 @@ func (h *handleLayer) SetField(field *ir.Field, val types.Bridge) error {
 			return errors.Errorf("cannot set field UpGate: cannot cast %T to types.Array[float32]", bridger)
 		}
 		h.owner.UpGate = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("UpGate", val.GXValue())
 		return nil
 
 	case "UpLinear":
@@ -1054,7 +1218,7 @@ func (h *handleLayer) SetField(field *ir.Field, val types.Bridge) error {
 			return errors.Errorf("cannot set field UpLinear: cannot cast %T to types.Array[float32]", bridger)
 		}
 		h.owner.UpLinear = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("UpLinear", val.GXValue())
 		return nil
 
 	case "DownLinear":
@@ -1064,7 +1228,7 @@ func (h *handleLayer) SetField(field *ir.Field, val types.Bridge) error {
 			return errors.Errorf("cannot set field DownLinear: cannot cast %T to types.Array[float32]", bridger)
 		}
 		h.owner.DownLinear = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("DownLinear", val.GXValue())
 		return nil
 
 	default:
@@ -1072,175 +1236,14 @@ func (h *handleLayer) SetField(field *ir.Field, val types.Bridge) error {
 	}
 }
 
-// NewGemma returns a handle on named type Gemma.
-func (fac *Factory) NewGemma() *Gemma {
-	s := &Gemma{}
-	typ := fac.Compiler.Package.IR.Types[1]
-	s.handle = handleGemma{
-		compiler: fac.Compiler,
-		struc:    typ,
-		owner:    s,
-	}
-
-	var err error
-	s.value, err = values.NewStruct(typ, nil)
-	if err != nil {
-		panic(err)
-	}
-
-	s.handle.runnerNewSamplingState = &MethodGemmaNewSamplingState{
-		methodBase: s.handle.compiler.methodGemmaNewSamplingState,
-		receiver:   s.handle,
-	}
-
-	s.handle.runnerSampleStep = &MethodGemmaSampleStep{
-		methodBase: s.handle.compiler.methodGemmaSampleStep,
-		receiver:   s.handle,
-	}
-
-	return s
-}
-
-var _ types.Bridge = (*handleGemma)(nil)
-
-func (h *handleGemma) NewFromField(field *ir.Field) (types.Bridge, error) {
-	name := field.Name.Name
-	switch name {
-
-	case "TokenEmbedding":
-		return nil, errors.Errorf("cannot create a new instance for field TokenEmbedding: type types.Array[float32] not supported")
-
-	case "Layers":
-		slice, err := types.NewEmptySlice[*Layer](field.Type(), func() (types.Bridge, error) {
-			return h.compiler.Factory.NewLayer().Bridge(), nil
-		})
-		if err != nil {
-			return nil, err
-		}
-		return slice.Bridge(), nil
-
-	case "FinalNormScale":
-		return nil, errors.Errorf("cannot create a new instance for field FinalNormScale: type types.Array[float32] not supported")
-
-	default:
-		return nil, errors.Errorf("structure Gemma has no field %q", name)
-	}
-}
-
-// SetField sets a field in the structure.
-func (h *handleGemma) SetField(field *ir.Field, val types.Bridge) error {
-	name := field.Name.Name
-	switch name {
-
-	case "TokenEmbedding":
-		bridger := val.Bridger()
-		fieldValue, ok := bridger.(types.Array[float32])
-		if !ok {
-			return errors.Errorf("cannot set field TokenEmbedding: cannot cast %T to types.Array[float32]", bridger)
-		}
-		h.owner.TokenEmbedding = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
-		return nil
-
-	case "Layers":
-		bridger := val.Bridger()
-		fieldValue, ok := bridger.(*types.Slice[*Layer])
-		if !ok {
-			return errors.Errorf("cannot set field Layers: cannot cast %T to *types.Slice[*Layer]", bridger)
-		}
-		h.owner.Layers = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
-		return nil
-
-	case "FinalNormScale":
-		bridger := val.Bridger()
-		fieldValue, ok := bridger.(types.Array[float32])
-		if !ok {
-			return errors.Errorf("cannot set field FinalNormScale: cannot cast %T to types.Array[float32]", bridger)
-		}
-		h.owner.FinalNormScale = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
-		return nil
-
-	default:
-		return errors.Errorf("structure Gemma has no field %q", name)
-	}
-}
-
-// NewKVCache returns a handle on named type KVCache.
-func (fac *Factory) NewKVCache() *KVCache {
-	s := &KVCache{}
-	typ := fac.Compiler.Package.IR.Types[2]
-	s.handle = handleKVCache{
-		compiler: fac.Compiler,
-		struc:    typ,
-		owner:    s,
-	}
-
-	var err error
-	s.value, err = values.NewStruct(typ, nil)
-	if err != nil {
-		panic(err)
-	}
-
-	return s
-}
-
-var _ types.Bridge = (*handleKVCache)(nil)
-
-func (h *handleKVCache) NewFromField(field *ir.Field) (types.Bridge, error) {
-	name := field.Name.Name
-	switch name {
-
-	case "ks":
-		return nil, errors.Errorf("cannot create a new instance for field ks: type types.Array[float32] not supported")
-
-	case "vs":
-		return nil, errors.Errorf("cannot create a new instance for field vs: type types.Array[float32] not supported")
-
-	default:
-		return nil, errors.Errorf("structure KVCache has no field %q", name)
-	}
-}
-
-// SetField sets a field in the structure.
-func (h *handleKVCache) SetField(field *ir.Field, val types.Bridge) error {
-	name := field.Name.Name
-	switch name {
-
-	case "ks":
-		bridger := val.Bridger()
-		fieldValue, ok := bridger.(types.Array[float32])
-		if !ok {
-			return errors.Errorf("cannot set field ks: cannot cast %T to types.Array[float32]", bridger)
-		}
-		h.owner.ks = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
-		return nil
-
-	case "vs":
-		bridger := val.Bridger()
-		fieldValue, ok := bridger.(types.Array[float32])
-		if !ok {
-			return errors.Errorf("cannot set field vs: cannot cast %T to types.Array[float32]", bridger)
-		}
-		h.owner.vs = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
-		return nil
-
-	default:
-		return errors.Errorf("structure KVCache has no field %q", name)
-	}
-}
-
 // NewSamplingState returns a handle on named type SamplingState.
 func (fac *Factory) NewSamplingState() *SamplingState {
 	s := &SamplingState{}
-	typ := fac.Compiler.Package.IR.Types[3]
+	typ := fac.Package.Package.IR.Types[3]
 	s.handle = handleSamplingState{
-		compiler: fac.Compiler,
-		struc:    typ,
-		owner:    s,
+		pkg:   fac.Package,
+		struc: typ,
+		owner: s,
 	}
 
 	var err error
@@ -1268,7 +1271,7 @@ func (h *handleSamplingState) NewFromField(field *ir.Field) (types.Bridge, error
 		return nil, errors.Errorf("cannot create a new instance for field token: type types.Atom[int64] not supported")
 
 	case "cache":
-		return h.compiler.Factory.NewKVCache().Bridge(), nil
+		return h.pkg.Factory.NewKVCache().Bridge(), nil
 
 	default:
 		return nil, errors.Errorf("structure SamplingState has no field %q", name)
@@ -1287,7 +1290,7 @@ func (h *handleSamplingState) SetField(field *ir.Field, val types.Bridge) error 
 			return errors.Errorf("cannot set field step: cannot cast %T to types.Atom[int64]", bridger)
 		}
 		h.owner.step = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("step", val.GXValue())
 		return nil
 
 	case "x":
@@ -1297,7 +1300,7 @@ func (h *handleSamplingState) SetField(field *ir.Field, val types.Bridge) error 
 			return errors.Errorf("cannot set field x: cannot cast %T to types.Array[float32]", bridger)
 		}
 		h.owner.x = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("x", val.GXValue())
 		return nil
 
 	case "token":
@@ -1307,7 +1310,7 @@ func (h *handleSamplingState) SetField(field *ir.Field, val types.Bridge) error 
 			return errors.Errorf("cannot set field token: cannot cast %T to types.Atom[int64]", bridger)
 		}
 		h.owner.token = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("token", val.GXValue())
 		return nil
 
 	case "cache":
@@ -1317,7 +1320,7 @@ func (h *handleSamplingState) SetField(field *ir.Field, val types.Bridge) error 
 			return errors.Errorf("cannot set field cache: cannot cast %T to *KVCache", bridger)
 		}
 		h.owner.cache = fieldValue
-		h.owner.value.SetField(field.ID, val.GXValue())
+		h.owner.value.SetField("cache", val.GXValue())
 		return nil
 
 	default:
