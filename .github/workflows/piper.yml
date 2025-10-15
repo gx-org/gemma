@@ -1,0 +1,101 @@
+# Copyright 2025 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Run checks on the piper branch to merge with the main branch.
+
+name: Piper
+
+on:
+  push:
+    branches: ["piper"]
+  workflow_dispatch:
+
+env:
+  GOPJRT_NOSUDO: true
+  GOPJRT_INSTALL_DIR: ${{ github.workspace }}/../gopjrtbin
+  CGO_CFLAGS: -I ${{ github.workspace }}/../gopjrtbin/include
+  CGO_CPPFLAGS: -I $${{ github.workspace }}/../gopjrtbin/include
+  CGO_CXXFLAGS: -I ${{ github.workspace }}/../gopjrtbin/include
+  CGO_LDFLAGS: -labsl_status -labsl_statusor -L ${{ github.workspace }}/../gopjrtbin/lib -lgomlx_xlabuilder
+  PJRT_PLUGIN_LIBRARY_PATH: ${{ github.workspace }}/../gopjrtbin/lib/gomlx/pjrt
+  LD_LIBRARY_PATH: ${{ github.workspace }}/../gopjrtbin/lib 
+
+jobs:
+
+  MergeToMain:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.23'
+
+    - name: Setup an identity
+      run: git config user.email "noreply@github.com" && git config user.name "Github Action"
+
+    - name: Install C++ dependencies
+      run: sudo apt install -y libabsl-dev
+        
+    - name: Install gomlx
+      run: |
+        mkdir $GOPJRT_INSTALL_DIR
+        curl -o $GOPJRT_INSTALL_DIR/install_linux_amd64.sh https://raw.githubusercontent.com/gomlx/gopjrt/main/cmd/install_linux_amd64.sh
+        bash $GOPJRT_INSTALL_DIR/install_linux_amd64.sh
+
+    - name: Move to the latest version
+      run: |
+        go get github.com/gx-org/backend@main
+        go get github.com/gx-org/gx@main
+        go get github.com/gx-org/gguf@main
+        go get github.com/gx-org/xlapjrt@main
+
+    - name: Generating code
+      run: go generate ./...
+
+    - name: Commit generated and modified files
+      run: |
+        if output=$(git status --porcelain) && [ -z "$output" ]; then
+          exit 0
+        else
+          git add .
+          git commit -a -m "Auto-commit after Go file generation."
+        fi
+
+    - name: Build
+      run: |
+        go build ./...
+
+    - name: Test the piper branch
+      run: go test ./...
+
+    - name: Checkout the main branch
+      run: git fetch origin ; git checkout -b main origin/main
+
+    - name: Merge piper into main
+      run: git merge --no-edit piper
+
+    - name: Test after piper merged into main
+      run: go test -v ./...
+
+    - name: Push to main
+      run: git push origin main
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
