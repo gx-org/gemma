@@ -24,15 +24,14 @@ import (
 
 // Tokenizer returns a new sentencepiece tokenizer.
 type Tokenizer struct {
-	gemma *Gemma
-	sp    *sentencepiece.Processor
+	sp *sentencepiece.Processor
 }
 
-func (g *Gemma) newTokenizer() (*Tokenizer, error) {
-	tk := &Tokenizer{gemma: g}
+func newTokenizer(params Params) (*Tokenizer, error) {
+	tk := &Tokenizer{}
 	var err error
-	log.Printf("Reading tokenizer file %s", g.params.TokenizerModel)
-	if tk.sp, err = sentencepiece.NewProcessorFromPath(g.params.TokenizerModel); err != nil {
+	log.Printf("Reading tokenizer file %s", params.TokenizerModel)
+	if tk.sp, err = sentencepiece.NewProcessorFromPath(params.TokenizerModel); err != nil {
 		return nil, errors.Errorf("cannot load sentence piece: %v", err)
 	}
 	return tk, nil

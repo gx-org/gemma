@@ -1,0 +1,160 @@
+// Copyright 2025 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package gemma
+
+import (
+	"math"
+	"num"
+	"shapes"
+)
+
+type (
+	// Gemma3Layer stores the weights of a layer in Gemma3.
+	Gemma3Layer struct {
+		// Transformer-Attention layers
+		PreAttNorm  [ModelDim]float32                    `gguf:"attn_norm"`
+		QueryNorm   [QKVDim]float32                      `gguf:"attn_q_norm"`
+		KeyNorm     [QKVDim]float32                      `gguf:"attn_k_norm"`
+		PostAttNorm [ModelDim]float32                    `gguf:"post_attention_norm"`
+		Attention   [ModelDim][NumHeads * QKVDim]float32 `gguf:"attn_output"`
+		Queries     [NumHeads * QKVDim][ModelDim]float32 `gguf:"attn_q"`
+		Keys        [QKVDim][ModelDim]float32            `gguf:"attn_k"`
+		Values      [QKVDim][ModelDim]float32            `gguf:"attn_v"`
+		// Feed-forward layers
+		PreNorm     [ModelDim]float32                    `gguf:"ffn_norm"`
+		UpGate      [FFHiddenDim][ModelDim]float32       `gguf:"ffn_gate"`
+		UpLinear    [FFHiddenDim][ModelDim]float32       `gguf:"ffn_up"`
+		DownLinear  [ModelDim][FFHiddenDim]float32       `gguf:"ffn_down"`
+		PostNorm    [ModelDim]float32                    `gguf:"post_ffw_norm"`
+	}
+
+	// Gemma3 stores the weights of the full Gemma3 network.
+	Gemma3 struct {
+		TokenEmbedding [VocabSize][ModelDim]float32      `gguf:"token_embd"`
+		Layers         []Gemma3Layer                     `gguf:"blk"`
+		FinalNormScale [ModelDim]float32                 `gguf:"output_norm"`
+	}
+)
+
+func qsRMSNorm(x [NumHeads][QKVDim]float32, weight [QKVDim]float32) [NumHeads][QKVDim]float32 {
+	totals{head} := einsum(x{head, qkvDim} * x{head, qkvDim})
+	scale := 1.0 / math.Sqrt[float32]((totals/float32(QKVDim))+1e-6)
+	scales := shapes.Broadcast(scale.([NumHeads][1]float32), []intlen{NumHeads, QKVDim})
+	x = x * scales
+	// Same caveat as above.
+	result{qkvDim, head} := einsum(weight{qkvDim} * x{head, qkvDim})
+	// einsum returns batch dimension first (though this isn't enforced yet!), so we must transpose.
+	return num.Transpose(result)
+}
+
+func (layer Gemma3Layer) feedForward(x [ModelDim]float32) [ModelDim]float32 {
+	gate := num.MatMul(layer.UpGate, x)
+	hidden := num.MatMul(layer.UpLinear, x)
+	return num.MatMul(layer.DownLinear, gelu(gate)*hidden)
+}
+
+// MQA: single KV head.
+func (layer Gemma3Layer) multiQueryAttention(cache KVCache, layerIdx, token int64, x [ModelDim]float32) (KVCache, [ModelDim]float32) {
+	queries := [NumHeads][QKVDim][ModelDim]float32(layer.Queries)
+	qs{head, qkvDim} := einsum(queries{head, qkvDim, modelDim} * x{modelDim})
+	k := num.MatMul(layer.Keys, x)
+	v := num.MatMul(layer.Values, x)
+
+	qs = qsRMSNorm(qs, layer.QueryNorm)
+	k = rmsNorm(k, layer.KeyNorm)
+	qs = qs * math.Rsqrt(float32(QKVDim))
+
+	// Apply positional embeddings to Q and K.
+	ropeBase := float32(10000)
+	if layerIdx != 0 && (layerIdx-5)%6 == 0 {
+		ropeBase = 1000000
+	}
+	qs = qRoPE(qs, float32(token), ropeBase)
+	k = rope(k, float32(token), ropeBase)
+
+	// Fill the KV cache:
+	cache.ks = set(cache.ks, k, [3]int64{layerIdx, token, 0})
+	cache.vs = set(cache.vs, v, [3]int64{layerIdx, token, 0})
+
+	// Build causal attention mask and return attention-weighted sum over previous Vs.
+	bias := shapes.Broadcast([1][NumSamplingSteps][1]float32(mask(token)), []intlen{NumHeads, NumSamplingSteps, 1})
+	attention{qNumHeads, seq, heads} := einsum(qs{qNumHeads, qkvDim} * cache.ks[layerIdx]{seq, heads, qkvDim})
+	attention = softmax(attention + bias)
+	sum{qNumHeads, qkvDim} := einsum(attention{qNumHeads, seq, heads} * cache.vs[layerIdx]{seq, heads, qkvDim})
+
+	// Final attention output projection. Reshape the output matrix to match GGUF convention.
+	finalAttention := [ModelDim][NumHeads][QKVDim]float32(layer.Attention)
+	result{modelDim} := einsum(sum{head, qkvDim} * finalAttention{modelDim, head, qkvDim})
+	return cache, result
+}
+
+func (gemma Gemma3) transformer(cache KVCache, token, pos int64) (KVCache, [ModelDim]float32) {
+	x := shapes.Gather(gemma.TokenEmbedding, [1][1]int64{{token}})[0]
+	x = x * math.Sqrt(float32(ModelDim))
+
+	for layerI := range NumGemmaLayers {
+		layer := gemma.Layers[layerI]
+		att_x := rmsNorm(x, layer.PreAttNorm)
+		cache, att_x = layer.multiQueryAttention(cache, int64(layerI), pos, att_x)
+		x = x + rmsNorm(att_x, layer.PostAttNorm)
+
+		ffw_x := rmsNorm(x, layer.PreNorm)
+		ffw_x = layer.feedForward(ffw_x)
+		x = x + rmsNorm(ffw_x, layer.PostNorm)
+	}
+	x = rmsNorm(x, gemma.FinalNormScale)
+	return cache, x
+}
+
+func (gemma Gemma3) extractToken(state SamplingState) int64 {
+	// Extract token probabilities.
+	// TODO: move the distribution to the transformer.
+	logits := num.MatMul(gemma.TokenEmbedding, state.x)
+	logprobs := softmax1D(logits)
+	return int64(num.Argmax(logprobs, 0))
+}
+
+// NewSamplingState returns a new sampling state from the initial prompt.
+func (gemma Gemma3) NewSamplingState(prompt [NumSamplingSteps + 1]int32) (SamplingState, [ModelDim]float32, int64) {
+	state := SamplingState{
+		step:  0,
+		x:     [ModelDim]float32{},
+		token: 0,
+		cache: KVCache{
+			ks: [NumGemmaLayers][NumSamplingSteps][1][QKVDim]float32{},
+			vs: [NumGemmaLayers][NumSamplingSteps][1][QKVDim]float32{},
+		},
+	}
+
+	// Run prefill, ignoring transformer output except for the final input token.
+	for i := range PromptLength {
+		state.cache, state.x = gemma.transformer(state.cache, int64(prompt[i]), int64(i))
+	}
+	state.step = int64(PromptLength)
+
+	// Produce the first output token.
+	state.token = gemma.extractToken(state)
+	return state, state.x, state.token
+}
+
+// SampleStep runs a sample step and returns the new state.
+func (gemma Gemma3) SampleStep(state SamplingState) (SamplingState, [ModelDim]float32, int64) {
+	state.cache, state.x = gemma.transformer(state.cache, state.token, state.step)
+	state.step = state.step + 1
+
+	// Extract token output.
+	state.token = gemma.extractToken(state)
+	return state, state.x, state.token
+}

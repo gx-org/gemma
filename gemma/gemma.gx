@@ -1,3 +1,17 @@
+// Copyright 2025 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package gemma
 
 import (
@@ -49,22 +63,22 @@ type (
 
 // gelu returns the approximation of GeLU used in Gemma training:
 // see https://jax.readthedocs.io/en/latest/_autosummary/jax.nn.gelu.html
-func gelu(x [FFHiddenDim]float32) [FFHiddenDim]float32 {
+func gelu(x [___S]float32) [S___]float32 {
 	arg := 0.797884560804236 * (x + (0.044715 * x * x * x))
-	return (x / 2) * (1 + math.Tanh(arg))
+	return (x / 2) * (1 + math.Tanh[float32](arg))
 }
 
-func logitsSoftCap(x [NumHeads][NumSamplingSteps][1]float32, cap float32) [NumHeads][NumSamplingSteps][1]float32 {
-	return cap * math.Tanh(x/cap)
+func logitsSoftCap(x [___S]float32, cap float32) [S___]float32 {
+	return cap * math.Tanh[float32](x/cap)
 }
 
-func l2Squared(x [ModelDim]float32) float32 {
+func l2Squared(x [_ax]float32) float32 {
 	result := einsum(x{i} * x{i})
 	return result
 }
 
-func rmsNorm(x, weight [ModelDim]float32) [ModelDim]float32 {
-	scale := 1.0 / math.Sqrt((l2Squared(x)/float32(ModelDim))+1e-6)
+func rmsNorm(x, weight [_ax]float32) [ax]float32 {
+	scale := 1.0 / math.Sqrt[float32]((l2Squared(x)/float32(axlengths(weight)[0]))+1e-6)
 	// NOTE: Internal implementations use `(1.0 + weight)`, but the GGUF convention
 	// is to bake that into the norm scales.
 	return weight * (scale * x)
@@ -78,39 +92,38 @@ func mask(pos int64) [NumSamplingSteps]float32 {
 func softmax(x [NumHeads][NumSamplingSteps][1]float32) [NumHeads][NumSamplingSteps][1]float32 {
 	// Return softmax over sequence dimension.
 	max := [NumHeads][1][1]float32(num.ReduceMax(x, []intidx{1}))
-	exps := math.Exp(x - shapes.Expand(max, []intlen{NumHeads, NumSamplingSteps, 1}))
+	exps := math.Exp[float32](x - shapes.Broadcast(max, []intlen{NumHeads, NumSamplingSteps, 1}))
 	sums := [NumHeads][1][1]float32(num.Sum(exps, []intidx{1}))
-	return exps / shapes.Expand(sums, []intlen{NumHeads, NumSamplingSteps, 1})
+	return exps / shapes.Broadcast(sums, []intlen{NumHeads, NumSamplingSteps, 1})
 }
 
-func softmaxVocab(x [VocabSize]float32) [VocabSize]float32 {
+func softmax1D(x [_ax]float32) [ax]float32 {
 	max := float32(num.ReduceMax(x, []intidx{0}))
-	exps := math.Exp(x - max)
+	exps := math.Exp[float32](x - max)
 	sum := float32(num.Sum(exps, []intidx{0}))
 	return exps / sum
 }
 
-func rope(x [QKVDim]float32, pos float32) [QKVDim]float32 {
-	maxWavelength := shapes.Expand([1]float32{10000}, []intlen{QKVDim / 2})
-	maxIota := 2 / float32(QKVDim)
-	freqExp := [...]float32(num.IotaFull([]intlen{QKVDim / 2})) * maxIota
-	timescale := math.Pow(maxWavelength, freqExp)
-	radians := pos / timescale
-	sin, cos := math.Sin(radians), math.Cos(radians)
-	xx := shapes.Split(0, x, 2)
-	return [QKVDim]float32(shapes.Concat(0, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin))
+func ropeTimescale(base float32) [QKVDim/2]float32 {
+	shape := []intlen{QKVDim / 2}
+	bases := shapes.Broadcast([1]float32{base}, shape)
+	fraction := [___]float32(2 * num.IotaFull(shape)) / float32(QKVDim)
+	return math.Pow(bases, fraction)
 }
 
-func qRoPE(x [NumHeads][QKVDim]float32, pos float32) [NumHeads][QKVDim]float32 {
-	maxWavelength := shapes.Expand([1][1]float32{{10000}}, []intlen{1, QKVDim / 2})
-	maxIota := 2 / float32(QKVDim)
-	freqExp := [...]float32(num.IotaFull([]intlen{1, QKVDim / 2})) * maxIota
-	timescale := math.Pow(maxWavelength, freqExp)
-	radians := pos / timescale
-	shape := []intlen{NumHeads, QKVDim / 2}
-	sin, cos := shapes.Expand(math.Sin(radians), shape), shapes.Expand(math.Cos(radians), shape)
+func rope(x [QKVDim]float32, pos float32, base float32) [QKVDim]float32 {
+	radians := pos / ropeTimescale(base)
+	sin, cos := math.Sin[float32](radians), math.Cos[float32](radians)
+	xx := shapes.Split(0, x, 2)
+	return shapes.Concat(0, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([QKVDim]float32)
+}
+
+func qRoPE(x [NumHeads][QKVDim]float32, pos float32, base float32) [NumHeads][QKVDim]float32 {
+	radiansRow := pos / ropeTimescale(base)
+	radians := shapes.Broadcast(radiansRow.([1][QKVDim/2]float32), []intlen{NumHeads, QKVDim / 2})
+	sin, cos := math.Sin[float32](radians), math.Cos[float32](radians)
 	xx := shapes.Split(1, x, 2)
-	return [NumHeads][QKVDim]float32(shapes.Concat(1, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin))
+	return shapes.Concat(1, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([NumHeads][QKVDim]float32)
 }
 
 func (layer Layer) feedForward(x [ModelDim]float32) [ModelDim]float32 {
@@ -129,15 +142,15 @@ func (layer Layer) multiQueryAttention(cache KVCache, layerIdx, token int64, x [
 	v := num.MatMul(layer.Values, x)
 
 	// Apply positional embeddings to Q and K.
-	qs = qRoPE(qs, float32(token))
-	k = rope(k, float32(token))
+	qs = qRoPE(qs, float32(token), 10000)
+	k = rope(k, float32(token), 10000)
 
 	// Fill the KV cache:
 	cache.ks = set(cache.ks, k, [3]int64{layerIdx, token, 0})
 	cache.vs = set(cache.vs, v, [3]int64{layerIdx, token, 0})
 
 	// Build causal attention mask and return attention-weighted sum over previous Vs.
-	bias := shapes.Expand([1][NumSamplingSteps][1]float32(mask(token)), []intlen{NumHeads, NumSamplingSteps, 1})
+	bias := shapes.Broadcast([1][NumSamplingSteps][1]float32(mask(token)), []intlen{NumHeads, NumSamplingSteps, 1})
 	attention{qNumHeads, seq, heads} := einsum(qs{qNumHeads, qkvDim} * cache.ks[layerIdx]{seq, heads, qkvDim})
 	attention = logitsSoftCap(attention, 30)
 	attention = softmax(attention + bias)
@@ -186,12 +199,12 @@ func (gemma Gemma) extractToken(state SamplingState) int64 {
 	// Extract token probabilities.
 	// TODO: move the distribution to the transformer.
 	logits := num.MatMul(gemma.TokenEmbedding, state.x)
-	logprobs := softmaxVocab(logits)
+	logprobs := softmax1D(logits)
 	return int64(num.Argmax(logprobs, 0))
 }
 
 // NewSamplingState returns a new sampling state from the initial prompt.
-func (gemma Gemma) NewSamplingState(prompt [NumSamplingSteps + 1]int32) (SamplingState, [_]float32, int64) {
+func (gemma Gemma) NewSamplingState(prompt [NumSamplingSteps + 1]int32) (SamplingState, [ModelDim]float32, int64) {
 	state := SamplingState{
 		step:  0,
 		x:     [ModelDim]float32{},
@@ -214,7 +227,7 @@ func (gemma Gemma) NewSamplingState(prompt [NumSamplingSteps + 1]int32) (Samplin
 }
 
 // SampleStep runs a sample step and returns the new state.
-func (gemma Gemma) SampleStep(state SamplingState) (SamplingState, [_]float32, int64) {
+func (gemma Gemma) SampleStep(state SamplingState) (SamplingState, [ModelDim]float32, int64) {
 	state.cache, state.x = gemma.transformer(state.cache, state.token, state.step)
 	state.step = state.step + 1
 

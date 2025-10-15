@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2025 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,64 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package gemma implements the gemma model.
 package gemma
-
-//go:generate go run github.com/gx-org/gx/golang/packager@latest --gx_package=github.com/gx-org/gemma/gemma
-//go:generate go run github.com/gx-org/gx/golang/binder/genbind@latest --gx_package=github.com/gx-org/gemma/gemma
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
-	"reflect"
 	"strings"
 
-	"github.com/pkg/errors"
 	ggufreader "github.com/abrander/gguf"
 	"github.com/gx-org/gemma/gemma/gemma_go_gx"
 	"github.com/gx-org/gguf/encoding/gguf"
 	"github.com/gx-org/gx/api"
-)
-
-const (
-	totalSamplingSteps = 100
-	beginSentenceID    = 2
+	"github.com/gx-org/gx/golang/binder/gobindings/types"
 )
 
 type (
-	// Params are the parameters of Gemma and its components.
-	Params struct {
-		NumSamplingSteps int
-		TokenizerModel   string
-		InferenceModel   string
-	}
-
-	// Gemma language model.
-	Gemma struct {
+	// Gemma3 language model.
+	Gemma3 struct {
 		device    *api.Device
 		params    Params
 		tokenizer *Tokenizer
 		gemmaGX   *gemma_go_gx.PackageHandle
-		network   *gemma_go_gx.Gemma
+		network   *gemma_go_gx.Gemma3
 	}
 )
 
-func vocabSize(r *ggufreader.Reader) (int, error) {
-	tokens, err := r.Metadata.Any("tokenizer.ggml.tokens")
-	if err != nil {
-		return 0, err
-	}
-	tokensS, ok := tokens.([]string)
-	if !ok {
-		return 0, errors.Errorf("cannot cast %T to %s", tokens, reflect.TypeFor[[]string]().String())
-	}
-	return len(tokensS), nil
-}
-
 // New Gemma language model instance.
-func New(device *api.Device, params Params) (g *Gemma, err error) {
-	g = &Gemma{device: device, params: params}
+func NewGemma3(device *api.Device, params Params) (g *Gemma3, err error) {
+	g = &Gemma3{device: device, params: params}
 	if g.tokenizer, err = newTokenizer(params); err != nil {
 		return nil, fmt.Errorf("cannot create tokenizer: %v", err)
 	}
@@ -90,26 +62,33 @@ func New(device *api.Device, params Params) (g *Gemma, err error) {
 		gemma_go_gx.NumSamplingSteps.Set(int64(g.params.NumSamplingSteps)),
 		gemma_go_gx.VocabSize.Set(int64(vocabSize)),
 		gemma_go_gx.NumGemmaLayers.Set(18),
-		gemma_go_gx.ModelDim.Set(2048),
+		gemma_go_gx.ModelDim.Set(640),
 		gemma_go_gx.QKVDim.Set(256),
-		gemma_go_gx.NumHeads.Set(8),
-		gemma_go_gx.FFHiddenDim.Set(8*2048),
+		gemma_go_gx.NumHeads.Set(4),
+		gemma_go_gx.FFHiddenDim.Set(2*2048),
 	)
+
 	if err != nil {
 		return nil, err
 	}
-	g.network = g.gemmaGX.Factory.NewGemma()
+	g.network = g.gemmaGX.Factory.NewGemma3()
 	if err := gguf.UnmarshalOnDevice(device, g.network, gguf.ToReaders(reader)); err != nil {
 		return nil, err
 	}
-	fmt.Println("Gemma initialized.")
+	fmt.Println("Gemma3 initialized.")
 	return
 }
 
-// Prompt Gemma with some text. Returns an answer.
-func (g *Gemma) Prompt(prompt string) (string, error) {
-	log.Printf("Prompting Gemma with %q", prompt)
-	promptSize, promptEncoded, err := g.tokenizer.Encode(prompt)
+// Wrap returns the given user prompt with control tokens inserted.
+//
+// This assumes an instruction-tuned model.
+func (g *Gemma3) Wrap(prompt string) string {
+	return fmt.Sprintf("<start_of_turn>user\n%s<end_of_turn>\n<start_of_turn>model\n", prompt)
+}
+
+func (g *Gemma3) Prompt(prompt string) (string, error) {
+	log.Printf("Prompting Gemma3 with %q", prompt)
+	promptSize, promptEncoded, err := g.tokenizer.Encode(g.Wrap(prompt))
 	if err != nil {
 		return "", fmt.Errorf("cannot encode prompt: %w", err)
 	}
@@ -120,39 +99,41 @@ func (g *Gemma) Prompt(prompt string) (string, error) {
 		return "", fmt.Errorf("cannot create initial sampling state: %w", err)
 	}
 
-	// Print the first token.
-	tokenID, err := tokenHandle.FetchValue()
-	if err != nil {
+	output := []string{}
+	stream := func(tokenHandle types.Atom[int64]) error {
+		tokenID, err := tokenHandle.FetchValue()
+		if err != nil {
+			return err
+		}
+		if tokenID == 2 || tokenID == 106 {
+			return io.EOF // EOS/EOT tokens, respectively.
+		}
+		token, err := g.tokenizer.Decode([]int{int(tokenID)})
+		if err != nil {
+			return err
+		}
+		fmt.Print(token)
+		output = append(output, token)
+		return nil
+	}
+
+	// Print the prompt, then the first token.
+	fmt.Println(prompt)
+	if err := stream(tokenHandle); err != nil {
 		return "", err
 	}
-	if tokenID == 2 {
-		return "", nil // EOS token.
-	}
-	token, err := g.tokenizer.Decode([]int{int(tokenID)})
-	if err != nil {
-		return "", err
-	}
-	fmt.Print(prompt, token)
-	output := []string{token}
 
 	for i := promptSize; i < g.params.NumSamplingSteps; i++ {
 		newState, _, tokenHandle, err := g.network.SampleStep(state)
 		if err != nil {
 			return "", fmt.Errorf("cannot run sampling step %d: %w", i, err)
 		}
-		tokenID, err = tokenHandle.FetchValue()
-		if err != nil {
+		if err := stream(tokenHandle); err != nil {
+			if err == io.EOF {
+				break
+			}
 			return "", err
 		}
-		if tokenID == 2 {
-			break // EOS token.
-		}
-		token, err := g.tokenizer.Decode([]int{int(tokenID)})
-		if err != nil {
-			return "", err
-		}
-		fmt.Print(token)
-		output = append(output, token)
 		state = newState
 	}
 

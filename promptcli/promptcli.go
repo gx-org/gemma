@@ -29,7 +29,12 @@ var (
 	inferenceModel = flag.String("inference_model", "", "Gemma weights in the GGUF format")
 	prompt         = flag.String("prompt", "list me ten biggest cities", "Prompt to give to Gemma")
 	pjrtPlugin     = flag.String("pjrt_plugin", "cpu", "PJRT plugin to load")
+	model          = flag.String("model", "gemma-2b", "Model architecture to execute (must be gemma-2b or gemma3-270m)")
 )
+
+type GemmaPrompter interface {
+	Prompt(prompt string) (string, error)
+}
 
 func main() {
 	rtm, err := plugin.New(*pjrtPlugin)
@@ -43,11 +48,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%+v", err)
 		os.Exit(1)
 	}
-	gem, err := gemma.New(device, gemma.Params{
-		NumSamplingSteps: 100,
-		TokenizerModel:   *tokenizerModel,
-		InferenceModel:   *inferenceModel,
-	})
+	var gem GemmaPrompter
+	if *model == "gemma-2b" {
+		gem, err = gemma.New(device, gemma.Params{
+			NumSamplingSteps: 100,
+			TokenizerModel:   *tokenizerModel,
+			InferenceModel:   *inferenceModel,
+		})
+	} else if *model == "gemma3-270m" {
+		gem, err = gemma.NewGemma3(device, gemma.Params{
+			NumSamplingSteps: 512,
+			TokenizerModel:   *tokenizerModel,
+			InferenceModel:   *inferenceModel,
+		})
+	} else {
+		fmt.Fprintf(os.Stderr, "Model type %q unsupported.\n", *model)
+		os.Exit(1)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%+v", err)
 		os.Exit(1)

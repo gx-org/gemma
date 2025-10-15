@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gx-org/gx/golang/binder"
+	"github.com/gx-org/gx/golang/binder/gobindings"
 	gxtesting "github.com/gx-org/gx/tests/testing"
 
 	_ "github.com/gx-org/gemma/gemma"
@@ -32,7 +32,7 @@ func TestGemmaBindings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cannot generate bindings:\n%+v", err)
 	}
-	if err := binder.GoBindings(out, pkg.IR()); err != nil {
+	if err := gobindings.Write(out, pkg.IR()); err != nil {
 		t.Fatalf("cannot generate bindings:\n%+v", err)
 	}
 	got := out.String()
