@@ -22,7 +22,7 @@ import (
 	"strings"
 
 	ggufreader "github.com/abrander/gguf"
-	"github.com/gx-org/gemma/gemma/gemma_go_gx"
+	"github.com/gx-org/gemma/gxdeps/github.com/gx-org/gemma/gemma/gemma_go_gx"
 	"github.com/gx-org/gguf/encoding/gguf"
 	"github.com/gx-org/gx/api"
 	"github.com/gx-org/gx/golang/binder/gobindings/types"
