@@ -65,11 +65,11 @@ type (
 // see https://jax.readthedocs.io/en/latest/_autosummary/jax.nn.gelu.html
 func gelu(x [___S]float32) [S___]float32 {
 	arg := 0.797884560804236 * (x + (0.044715 * x * x * x))
-	return (x / 2) * (1 + math.Tanh[float32](arg))
+	return (x / 2) * (1 + math.Tanh(arg))
 }
 
 func logitsSoftCap(x [___S]float32, cap float32) [S___]float32 {
-	return cap * math.Tanh[float32](x/cap)
+	return cap * math.Tanh(x/cap)
 }
 
 func l2Squared(x [_ax]float32) float32 {
@@ -78,7 +78,7 @@ func l2Squared(x [_ax]float32) float32 {
 }
 
 func rmsNorm(x, weight [_ax]float32) [ax]float32 {
-	scale := 1.0 / math.Sqrt[float32]((l2Squared(x)/float32(axlengths(weight)[0]))+1e-6)
+	scale := 1.0 / math.Sqrt((l2Squared(x)/float32(axlengths(weight)[0]))+1e-6)
 	// NOTE: Internal implementations use `(1.0 + weight)`, but the GGUF convention
 	// is to bake that into the norm scales.
 	return weight * (scale * x)
@@ -92,14 +92,14 @@ func mask(pos int64) [NumSamplingSteps]float32 {
 func softmax(x [NumHeads][NumSamplingSteps][1]float32) [NumHeads][NumSamplingSteps][1]float32 {
 	// Return softmax over sequence dimension.
 	max := [NumHeads][1][1]float32(num.ReduceMax(x, []intidx{1}))
-	exps := math.Exp[float32](x - shapes.Broadcast(max, []intlen{NumHeads, NumSamplingSteps, 1}))
+	exps := math.Exp(x - shapes.Broadcast(max, []intlen{NumHeads, NumSamplingSteps, 1}))
 	sums := [NumHeads][1][1]float32(num.Sum(exps, []intidx{1}))
 	return exps / shapes.Broadcast(sums, []intlen{NumHeads, NumSamplingSteps, 1})
 }
 
 func softmax1D(x [_ax]float32) [ax]float32 {
 	max := float32(num.ReduceMax(x, []intidx{0}))
-	exps := math.Exp[float32](x - max)
+	exps := math.Exp(x - max)
 	sum := float32(num.Sum(exps, []intidx{0}))
 	return exps / sum
 }
@@ -113,15 +113,15 @@ func ropeTimescale(base float32) [QKVDim/2]float32 {
 
 func rope(x [QKVDim]float32, pos float32, base float32) [QKVDim]float32 {
 	radians := pos / ropeTimescale(base)
-	sin, cos := math.Sin[float32](radians), math.Cos[float32](radians)
+	sin, cos := math.Sin(radians), math.Cos(radians)
 	xx := shapes.Split(0, x, 2)
 	return shapes.Concat(0, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([QKVDim]float32)
 }
 
 func qRoPE(x [NumHeads][QKVDim]float32, pos float32, base float32) [NumHeads][QKVDim]float32 {
 	radiansRow := pos / ropeTimescale(base)
-	radians := shapes.Broadcast(radiansRow.([1][QKVDim/2]float32), []intlen{NumHeads, QKVDim / 2})
-	sin, cos := math.Sin[float32](radians), math.Cos[float32](radians)
+	radians := shapes.Broadcast([1][QKVDim/2]float32(radiansRow), []intlen{NumHeads, QKVDim / 2})
+	sin, cos := math.Sin(radians), math.Cos(radians)
 	xx := shapes.Split(1, x, 2)
 	return shapes.Concat(1, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([NumHeads][QKVDim]float32)
 }

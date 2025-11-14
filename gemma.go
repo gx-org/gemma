@@ -15,8 +15,8 @@
 // Package gemma implements the gemma model.
 package gemma
 
-//go:generate go run github.com/gx-org/gx/golang/packager@main --gx_package=github.com/gx-org/gemma/gemma
-//go:generate go run github.com/gx-org/gx/golang/binder/genbind@main --gx_package=github.com/gx-org/gemma/gemma
+//go:generate go run github.com/gx-org/gx/golang/packager@latest --gx_package=github.com/gx-org/gemma/gemma
+//go:generate go run github.com/gx-org/gx/golang/binder/genbind@latest --gx_package=github.com/gx-org/gemma/gemma
 
 import (
 	"fmt"
@@ -25,12 +25,11 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/gx-org/gemma/gxdeps/github.com/gx-org/gemma/gemma/gemma_go_gx"
-
+	"github.com/pkg/errors"
 	ggufreader "github.com/abrander/gguf"
+	"github.com/gx-org/gemma/gemma/gemma_go_gx"
 	"github.com/gx-org/gguf/encoding/gguf"
 	"github.com/gx-org/gx/api"
-	"github.com/pkg/errors"
 )
 
 const (
