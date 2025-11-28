@@ -113,7 +113,7 @@ func (g *Gemma) Prompt(prompt string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot encode prompt: %w", err)
 	}
-	g.gemmaGX.AppendOptions(gemma_go_gx.PromptLength.Set(int64(promptSize)))
+	g.gemmaGX.Setup().AppendOptions(gemma_go_gx.PromptLength.Set(int64(promptSize)))
 	// NewSamplingState processes the prompt and returns the first predicted token.
 	state, _, tokenHandle, err := g.network.NewSamplingState(promptEncoded)
 	if err != nil {
