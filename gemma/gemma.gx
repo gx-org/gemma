@@ -104,10 +104,10 @@ func softmax1D(x [_ax]float32) [ax]float32 {
 	return exps / sum
 }
 
-func ropeTimescale(base float32) [QKVDim/2]float32 {
+func ropeTimescale(base float32) [QKVDim / 2]float32 {
 	shape := []intlen{QKVDim / 2}
 	bases := shapes.Broadcast([1]float32{base}, shape)
-	fraction := [___]float32(2 * num.IotaFull(shape)) / float32(QKVDim)
+	fraction := [___]float32(2*num.IotaFull(shape)) / float32(QKVDim)
 	return math.Pow(bases, fraction)
 }
 
@@ -120,7 +120,7 @@ func rope(x [QKVDim]float32, pos float32, base float32) [QKVDim]float32 {
 
 func qRoPE(x [NumHeads][QKVDim]float32, pos float32, base float32) [NumHeads][QKVDim]float32 {
 	radiansRow := pos / ropeTimescale(base)
-	radians := shapes.Broadcast([1][QKVDim/2]float32(radiansRow), []intlen{NumHeads, QKVDim / 2})
+	radians := shapes.Broadcast([1][QKVDim / 2]float32(radiansRow), []intlen{NumHeads, QKVDim / 2})
 	sin, cos := math.Sin(radians), math.Cos(radians)
 	xx := shapes.Split(1, x, 2)
 	return shapes.Concat(1, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([NumHeads][QKVDim]float32)
@@ -235,3 +235,4 @@ func (gemma Gemma) SampleStep(state SamplingState) (SamplingState, [ModelDim]flo
 	state.token = gemma.extractToken(state)
 	return state, state.x, state.token
 }
+
