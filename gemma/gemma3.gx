@@ -17,7 +17,7 @@ package gemma
 import (
 	"math"
 	"num"
-	"shapes"
+	"shape"
 )
 
 type (
@@ -33,25 +33,25 @@ type (
 		Keys        [QKVDim][ModelDim]float32            `gguf:"attn_k"`
 		Values      [QKVDim][ModelDim]float32            `gguf:"attn_v"`
 		// Feed-forward layers
-		PreNorm     [ModelDim]float32                    `gguf:"ffn_norm"`
-		UpGate      [FFHiddenDim][ModelDim]float32       `gguf:"ffn_gate"`
-		UpLinear    [FFHiddenDim][ModelDim]float32       `gguf:"ffn_up"`
-		DownLinear  [ModelDim][FFHiddenDim]float32       `gguf:"ffn_down"`
-		PostNorm    [ModelDim]float32                    `gguf:"post_ffw_norm"`
+		PreNorm    [ModelDim]float32              `gguf:"ffn_norm"`
+		UpGate     [FFHiddenDim][ModelDim]float32 `gguf:"ffn_gate"`
+		UpLinear   [FFHiddenDim][ModelDim]float32 `gguf:"ffn_up"`
+		DownLinear [ModelDim][FFHiddenDim]float32 `gguf:"ffn_down"`
+		PostNorm   [ModelDim]float32              `gguf:"post_ffw_norm"`
 	}
 
 	// Gemma3 stores the weights of the full Gemma3 network.
 	Gemma3 struct {
-		TokenEmbedding [VocabSize][ModelDim]float32      `gguf:"token_embd"`
-		Layers         []Gemma3Layer                     `gguf:"blk"`
-		FinalNormScale [ModelDim]float32                 `gguf:"output_norm"`
+		TokenEmbedding [VocabSize][ModelDim]float32 `gguf:"token_embd"`
+		Layers         []Gemma3Layer                `gguf:"blk"`
+		FinalNormScale [ModelDim]float32            `gguf:"output_norm"`
 	}
 )
 
 func qsRMSNorm(x [NumHeads][QKVDim]float32, weight [QKVDim]float32) [NumHeads][QKVDim]float32 {
 	totals{head} := einsum(x{head, qkvDim} * x{head, qkvDim})
 	scale := 1.0 / math.Sqrt[float32]((totals/float32(QKVDim))+1e-6)
-	scales := shapes.Broadcast(scale.([NumHeads][1]float32), []intlen{NumHeads, QKVDim})
+	scales := shape.Broadcast(scale.([NumHeads][1]float32), []intlen{NumHeads, QKVDim})
 	x = x * scales
 	// Same caveat as above.
 	result{qkvDim, head} := einsum(weight{qkvDim} * x{head, qkvDim})
@@ -89,7 +89,7 @@ func (layer Gemma3Layer) multiQueryAttention(cache KVCache, layerIdx, token int6
 	cache.vs = set(cache.vs, v, [3]int64{layerIdx, token, 0})
 
 	// Build causal attention mask and return attention-weighted sum over previous Vs.
-	bias := shapes.Broadcast([1][NumSamplingSteps][1]float32(mask(token)), []intlen{NumHeads, NumSamplingSteps, 1})
+	bias := shape.Broadcast([1][NumSamplingSteps][1]float32(mask(token)), []intlen{NumHeads, NumSamplingSteps, 1})
 	attention{qNumHeads, seq, heads} := einsum(qs{qNumHeads, qkvDim} * cache.ks[layerIdx]{seq, heads, qkvDim})
 	attention = softmax(attention + bias)
 	sum{qNumHeads, qkvDim} := einsum(attention{qNumHeads, seq, heads} * cache.vs[layerIdx]{seq, heads, qkvDim})
@@ -101,7 +101,7 @@ func (layer Gemma3Layer) multiQueryAttention(cache KVCache, layerIdx, token int6
 }
 
 func (gemma Gemma3) transformer(cache KVCache, token, pos int64) (KVCache, [ModelDim]float32) {
-	x := shapes.Gather(gemma.TokenEmbedding, [1][1]int64{{token}})[0]
+	x := shape.Gather(gemma.TokenEmbedding, [1][1]int64{{token}})[0]
 	x = x * math.Sqrt(float32(ModelDim))
 
 	for layerI := range NumGemmaLayers {

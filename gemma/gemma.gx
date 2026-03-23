@@ -17,7 +17,7 @@ package gemma
 import (
 	"math"
 	"num"
-	"shapes"
+	"shape"
 )
 
 // Model hyperparameters:
@@ -92,9 +92,9 @@ func mask(pos int64) [NumSamplingSteps]float32 {
 func softmax(x [NumHeads][NumSamplingSteps][1]float32) [NumHeads][NumSamplingSteps][1]float32 {
 	// Return softmax over sequence dimension.
 	max := [NumHeads][1][1]float32(num.ReduceMax(x, []intidx{1}))
-	exps := math.Exp(x - shapes.Broadcast(max, []intlen{NumHeads, NumSamplingSteps, 1}))
+	exps := math.Exp(x - shape.Broadcast(max, []intlen{NumHeads, NumSamplingSteps, 1}))
 	sums := [NumHeads][1][1]float32(num.Sum(exps, []intidx{1}))
-	return exps / shapes.Broadcast(sums, []intlen{NumHeads, NumSamplingSteps, 1})
+	return exps / shape.Broadcast(sums, []intlen{NumHeads, NumSamplingSteps, 1})
 }
 
 func softmax1D(x [_ax]float32) [ax]float32 {
@@ -105,25 +105,25 @@ func softmax1D(x [_ax]float32) [ax]float32 {
 }
 
 func ropeTimescale(base float32) [QKVDim / 2]float32 {
-	shape := []intlen{QKVDim / 2}
-	bases := shapes.Broadcast([1]float32{base}, shape)
-	fraction := [___]float32(2*num.IotaFull(shape)) / float32(QKVDim)
+	sh := []intlen{QKVDim / 2}
+	bases := shape.Broadcast([1]float32{base}, sh)
+	fraction := [___]float32(2*num.IotaFull(sh)) / float32(QKVDim)
 	return math.Pow(bases, fraction)
 }
 
 func rope(x [QKVDim]float32, pos float32, base float32) [QKVDim]float32 {
 	radians := pos / ropeTimescale(base)
 	sin, cos := math.Sin(radians), math.Cos(radians)
-	xx := shapes.Split(0, x, 2)
-	return shapes.Concat(0, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([QKVDim]float32)
+	xx := shape.Split(0, x, 2)
+	return shape.Concat(0, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([QKVDim]float32)
 }
 
 func qRoPE(x [NumHeads][QKVDim]float32, pos float32, base float32) [NumHeads][QKVDim]float32 {
 	radiansRow := pos / ropeTimescale(base)
-	radians := shapes.Broadcast([1][QKVDim / 2]float32(radiansRow), []intlen{NumHeads, QKVDim / 2})
+	radians := shape.Broadcast([1][QKVDim / 2]float32(radiansRow), []intlen{NumHeads, QKVDim / 2})
 	sin, cos := math.Sin(radians), math.Cos(radians)
-	xx := shapes.Split(1, x, 2)
-	return shapes.Concat(1, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([NumHeads][QKVDim]float32)
+	xx := shape.Split(1, x, 2)
+	return shape.Concat(1, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([NumHeads][QKVDim]float32)
 }
 
 func (layer Layer) feedForward(x [ModelDim]float32) [ModelDim]float32 {
@@ -150,7 +150,7 @@ func (layer Layer) multiQueryAttention(cache KVCache, layerIdx, token int64, x [
 	cache.vs = set(cache.vs, v, [3]int64{layerIdx, token, 0})
 
 	// Build causal attention mask and return attention-weighted sum over previous Vs.
-	bias := shapes.Broadcast([1][NumSamplingSteps][1]float32(mask(token)), []intlen{NumHeads, NumSamplingSteps, 1})
+	bias := shape.Broadcast([1][NumSamplingSteps][1]float32(mask(token)), []intlen{NumHeads, NumSamplingSteps, 1})
 	attention{qNumHeads, seq, heads} := einsum(qs{qNumHeads, qkvDim} * cache.ks[layerIdx]{seq, heads, qkvDim})
 	attention = logitsSoftCap(attention, 30)
 	attention = softmax(attention + bias)
@@ -179,7 +179,7 @@ type (
 )
 
 func (gemma Gemma) transformer(cache KVCache, token, pos int64) (KVCache, [ModelDim]float32) {
-	x := shapes.Gather(gemma.TokenEmbedding, [1][1]int64{{token}})[0]
+	x := shape.Gather(gemma.TokenEmbedding, [1][1]int64{{token}})[0]
 	x = x * math.Sqrt(float32(ModelDim))
 
 	for layerI := range NumGemmaLayers {
@@ -235,4 +235,3 @@ func (gemma Gemma) SampleStep(state SamplingState) (SamplingState, [ModelDim]flo
 	state.token = gemma.extractToken(state)
 	return state, state.x, state.token
 }
-
