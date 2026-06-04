@@ -85,45 +85,45 @@ func rmsNorm(x, weight [_ax]float32) [ax]float32 {
 }
 
 func mask(pos int64) [NumSamplingSteps]float32 {
-	boolMask := num.IotaFull([]intlen{NumSamplingSteps}) > pos
+	boolMask := num.IotaFull[[]intlen{NumSamplingSteps}]() > pos
 	return ([NumSamplingSteps]float32)(boolMask) * math.NegInfFloat32
 }
 
 func softmax(x [NumHeads][NumSamplingSteps][1]float32) [NumHeads][NumSamplingSteps][1]float32 {
 	// Return softmax over sequence dimension.
-	max := [NumHeads][1][1]float32(num.ReduceMax(x, []intidx{1}))
-	exps := math.Exp(x - shape.Broadcast(max, []intlen{NumHeads, NumSamplingSteps, 1}))
-	sums := [NumHeads][1][1]float32(num.Sum(exps, []intidx{1}))
-	return exps / shape.Broadcast(sums, []intlen{NumHeads, NumSamplingSteps, 1})
+	max := [NumHeads][1][1]float32(num.ReduceMax[[]intidx{1}](x))
+	exps := math.Exp(x - shape.Broadcast[[]intlen{NumHeads, NumSamplingSteps, 1}](max))
+	sums := [NumHeads][1][1]float32(num.Sum[[]intidx{1}](exps))
+	return exps / shape.Broadcast[[]intlen{NumHeads, NumSamplingSteps, 1}](sums)
 }
 
 func softmax1D(x [_ax]float32) [ax]float32 {
-	max := float32(num.ReduceMax(x, []intidx{0}))
+	max := float32(num.ReduceMax[[]intidx{0}](x))
 	exps := math.Exp(x - max)
-	sum := float32(num.Sum(exps, []intidx{0}))
+	sum := float32(num.Sum[[]intidx{0}](exps))
 	return exps / sum
 }
 
 func ropeTimescale(base float32) [QKVDim / 2]float32 {
 	sh := []intlen{QKVDim / 2}
-	bases := shape.Broadcast([1]float32{base}, sh)
-	fraction := [___]float32(2*num.IotaFull(sh)) / float32(QKVDim)
+	bases := shape.Broadcast[sh]([1]float32{base})
+	fraction := [...]float32(2*num.IotaFull[sh]()) / float32(QKVDim)
 	return math.Pow(bases, fraction)
 }
 
 func rope(x [QKVDim]float32, pos float32, base float32) [QKVDim]float32 {
 	radians := pos / ropeTimescale(base)
 	sin, cos := math.Sin(radians), math.Cos(radians)
-	xx := shape.Split(0, x, 2)
-	return shape.Concat(0, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([QKVDim]float32)
+	xx := shape.Split[0][2](x)
+	return shape.Concat[0](xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([QKVDim]float32)
 }
 
 func qRoPE(x [NumHeads][QKVDim]float32, pos float32, base float32) [NumHeads][QKVDim]float32 {
 	radiansRow := pos / ropeTimescale(base)
-	radians := shape.Broadcast([1][QKVDim / 2]float32(radiansRow), []intlen{NumHeads, QKVDim / 2})
+	radians := shape.Broadcast[[]intlen{NumHeads, QKVDim / 2}]([1][QKVDim / 2]float32(radiansRow))
 	sin, cos := math.Sin(radians), math.Cos(radians)
-	xx := shape.Split(1, x, 2)
-	return shape.Concat(1, xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([NumHeads][QKVDim]float32)
+	xx := shape.Split[1][2](x)
+	return shape.Concat[1](xx[0]*cos-xx[1]*sin, xx[1]*cos+xx[0]*sin).([NumHeads][QKVDim]float32)
 }
 
 func (layer Layer) feedForward(x [ModelDim]float32) [ModelDim]float32 {
@@ -150,7 +150,7 @@ func (layer Layer) multiQueryAttention(cache KVCache, layerIdx, token int64, x [
 	cache.vs = set(cache.vs, v, [3]int64{layerIdx, token, 0})
 
 	// Build causal attention mask and return attention-weighted sum over previous Vs.
-	bias := shape.Broadcast([1][NumSamplingSteps][1]float32(mask(token)), []intlen{NumHeads, NumSamplingSteps, 1})
+	bias := shape.Broadcast[[]intlen{NumHeads, NumSamplingSteps, 1}]([1][NumSamplingSteps][1]float32(mask(token)))
 	attention{qNumHeads, seq, heads} := einsum(qs{qNumHeads, qkvDim} * cache.ks[layerIdx]{seq, heads, qkvDim})
 	attention = logitsSoftCap(attention, 30)
 	attention = softmax(attention + bias)
@@ -200,7 +200,7 @@ func (gemma Gemma) extractToken(state SamplingState) int64 {
 	// TODO: move the distribution to the transformer.
 	logits := num.MatMul(gemma.TokenEmbedding, state.x)
 	logprobs := softmax1D(logits)
-	return int64(num.Argmax(logprobs, 0))
+	return int64(num.ArgMax[0](logprobs))
 }
 
 // NewSamplingState returns a new sampling state from the initial prompt.
