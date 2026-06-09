@@ -26,7 +26,7 @@ import (
 )
 
 func TestGemmaBindings(t *testing.T) {
-	bld := gxtesting.NewBuilderStaticSource(nil)
+	bld := gxtesting.NewBuilderStaticSource()
 	out := &strings.Builder{}
 	pkg, err := bld.Build("github.com/gx-org/gemma/gemma")
 	if err != nil {
