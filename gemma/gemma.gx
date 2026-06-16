@@ -63,21 +63,21 @@ type (
 
 // gelu returns the approximation of GeLU used in Gemma training:
 // see https://jax.readthedocs.io/en/latest/_autosummary/jax.nn.gelu.html
-func gelu(x [___S]float32) [S___]float32 {
+func gelu[S []intlen](x [unpack(S)]float32) [unpack(S)]float32 {
 	arg := 0.797884560804236 * (x + (0.044715 * x * x * x))
 	return (x / 2) * (1 + math.Tanh(arg))
 }
 
-func logitsSoftCap(x [___S]float32, cap float32) [S___]float32 {
+func logitsSoftCap[S []intlen](x [unpack(S)]float32, cap float32) [unpack(S)]float32 {
 	return cap * math.Tanh(x/cap)
 }
 
-func l2Squared(x [_ax]float32) float32 {
+func l2Squared[ax intlen](x [ax]float32) float32 {
 	result := einsum(x{i} * x{i})
 	return result
 }
 
-func rmsNorm(x, weight [_ax]float32) [ax]float32 {
+func rmsNorm[ax intlen](x, weight [ax]float32) [ax]float32 {
 	scale := 1.0 / math.Sqrt((l2Squared(x)/float32(axlengths(weight)[0]))+1e-6)
 	// NOTE: Internal implementations use `(1.0 + weight)`, but the GGUF convention
 	// is to bake that into the norm scales.
